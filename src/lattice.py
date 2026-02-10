@@ -12,6 +12,7 @@ The lattice provides bidirectional mapping between:
 """
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 from typing import Tuple, Optional
 
@@ -69,7 +70,7 @@ class Lattice2D:
             Rectangular lattice with horizontal scanlines
         """
         origins = torch.zeros(height, 2, device=device)
-        origins[:, 1] = torch.arange(height, device=device)  # y-coordinates
+        origins[:, 1] = torch.arange(height, device=device, dtype=torch.float32)
 
         tangents = torch.zeros(height, 2, device=device)
         tangents[:, 0] = 1.0  # Horizontal direction
@@ -96,7 +97,7 @@ class Lattice2D:
         angles = torch.linspace(0, 2 * np.pi, n_lines + 1, device=device)[:-1]
 
         # Origins at the center
-        origins = torch.tensor(center, device=device).unsqueeze(0).repeat(n_lines, 1)
+        origins = torch.tensor(center, device=device, dtype=torch.float32).unsqueeze(0).repeat(n_lines, 1)
 
         # Tangents point radially outward
         tangents = torch.stack([
@@ -111,15 +112,13 @@ class Lattice2D:
 
     def forward_mapping(self, world_points: torch.Tensor) -> torch.Tensor:
         """
-        Map world space points to lattice index space.
+        Map world space points to lattice index space (vectorized).
 
-        f: V → L
+        f: V -> L
 
         For 2D, we map (x, y) in world space to (u, n) in lattice space where:
         - u: position along the scanline
         - n: which scanline (can be fractional for interpolation)
-
-        Based on Section 3.2.1 of the paper (adapted for 2D).
 
         Args:
             world_points: Points in world space (N, 2)
@@ -130,65 +129,63 @@ class Lattice2D:
         N = world_points.shape[0]
         device = world_points.device
 
-        lattice_points = torch.zeros(N, 2, device=device)
+        # Compute vector from each scanline origin to each point
+        # world_points: (N, 2), origins: (n_lines, 2)
+        # diff: (N, n_lines, 2)
+        diff = world_points.unsqueeze(1) - self.origins.unsqueeze(0)
 
-        for i in range(N):
-            p_w = world_points[i]  # (x, y)
+        # Distance along normal direction for each scanline
+        # normals: (n_lines, 2) -> (1, n_lines, 2)
+        normal_dist = torch.abs((diff * self.normals.unsqueeze(0)).sum(dim=2))  # (N, n_lines)
 
-            # Find closest scanline by checking distance to each
-            min_dist = float('inf')
-            best_n = 0
+        # Tangent projection (u) for each scanline — used to break ties.
+        # When two scanlines (e.g. a radial line and its opposite) have the
+        # same normal distance, the correct one is the one giving u >= 0.
+        tangent_proj = (diff * self.tangents.unsqueeze(0)).sum(dim=2)  # (N, n_lines)
+        penalty = torch.where(tangent_proj < 0,
+                              torch.tensor(1e10, device=device),
+                              torch.zeros(1, device=device))
+        effective_dist = normal_dist + penalty
 
-            for n in range(self.n_lines):
-                # Vector from scanline origin to point
-                v = p_w - self.origins[n]
+        # Find closest scanline for each point
+        best_n = torch.argmin(effective_dist, dim=1)  # (N,)
 
-                # Distance along normal direction
-                dist = torch.abs(torch.dot(v, self.normals[n]))
+        # Gather the diff vectors for the best scanlines
+        batch_idx = torch.arange(N, device=device)
+        best_diff = diff[batch_idx, best_n]  # (N, 2)
+        best_tangent = self.tangents[best_n]  # (N, 2)
 
-                if dist < min_dist:
-                    min_dist = dist
-                    best_n = n
+        # u = projection along tangent
+        u = (best_diff * best_tangent).sum(dim=1)  # (N,)
 
-            # Now compute position along the tangent and fractional scanline index
-            # For scanline n, project point onto it
-            n = best_n
-            v = p_w - self.origins[n]
+        # Compute fractional scanline position by interpolating with neighbor
+        best_normal_dist = normal_dist[batch_idx, best_n]  # (N,)
 
-            # Position along tangent (u coordinate)
-            u = torch.dot(v, self.tangents[n])
+        next_n = torch.clamp(best_n + 1, 0, self.n_lines - 1)
+        next_normal_dist = normal_dist[batch_idx, next_n]  # (N,)
 
-            # Fractional scanline position
-            # Check neighboring scanlines for interpolation
-            if n < self.n_lines - 1:
-                dist_to_n = torch.abs(torch.dot(v, self.normals[n]))
-                v_next = p_w - self.origins[n + 1]
-                dist_to_next = torch.abs(torch.dot(v_next, self.normals[n + 1]))
+        total_dist = best_normal_dist + next_normal_dist
+        frac = torch.where(
+            total_dist > 1e-6,
+            best_normal_dist / total_dist,
+            torch.zeros_like(total_dist)
+        )
 
-                # Linear interpolation between scanlines
-                total_dist = dist_to_n + dist_to_next
-                if total_dist > 1e-6:
-                    frac = dist_to_n / total_dist
-                    n_frac = n + frac
-                else:
-                    n_frac = float(n)
-            else:
-                n_frac = float(n)
+        # At the last scanline, no fractional part
+        at_last = best_n >= self.n_lines - 1
+        frac = torch.where(at_last, torch.zeros_like(frac), frac)
 
-            lattice_points[i, 0] = u
-            lattice_points[i, 1] = n_frac
+        n_frac = best_n.float() + frac
 
-        return lattice_points
+        return torch.stack([u, n_frac], dim=1)
 
     def inverse_mapping(self, lattice_points: torch.Tensor) -> torch.Tensor:
         """
-        Map lattice index space points to world space.
+        Map lattice index space points to world space (vectorized).
 
-        g: L → V
+        g: L -> V
 
-        For 2D, we map (u, n) in lattice space to (x, y) in world space where:
-        - u: position along the scanline
-        - n: which scanline (can be fractional for interpolation)
+        For 2D, we map (u, n) in lattice space to (x, y) in world space.
 
         Args:
             lattice_points: Points in lattice index space (N, 2) with (u, n)
@@ -196,29 +193,148 @@ class Lattice2D:
         Returns:
             Points in world space (N, 2) with (x, y)
         """
-        N = lattice_points.shape[0]
-        device = lattice_points.device
+        u = lattice_points[:, 0]       # (N,)
+        n_frac = lattice_points[:, 1]  # (N,)
 
-        world_points = torch.zeros(N, 2, device=device)
+        n = torch.floor(n_frac).long()
+        frac = n_frac - n.float()
 
-        for i in range(N):
-            u, n_frac = lattice_points[i]
+        # Clamp to valid range
+        n = torch.clamp(n, 0, self.n_lines - 1)
+        n_next = torch.clamp(n + 1, 0, self.n_lines - 1)
 
-            # Get integer scanline index and fractional part
-            n = int(torch.floor(n_frac).item())
-            frac = (n_frac - n).item()
+        # Gather origins and tangents for scanline n and n+1
+        o_n = self.origins[n]          # (N, 2)
+        t_n = self.tangents[n]         # (N, 2)
+        o_next = self.origins[n_next]  # (N, 2)
+        t_next = self.tangents[n_next] # (N, 2)
 
-            # Clamp to valid range
-            n = max(0, min(n, self.n_lines - 1))
+        # p = origin + u * tangent
+        p_n = o_n + u.unsqueeze(1) * t_n
+        p_next = o_next + u.unsqueeze(1) * t_next
 
-            # Get position on scanline n
-            p_n = self.origins[n] + u * self.tangents[n]
-
-            # If fractional, interpolate with next scanline
-            if frac > 1e-6 and n < self.n_lines - 1:
-                p_next = self.origins[n + 1] + u * self.tangents[n + 1]
-                world_points[i] = (1 - frac) * p_n + frac * p_next
-            else:
-                world_points[i] = p_n
+        # Linearly interpolate between scanlines
+        frac = frac.unsqueeze(1)  # (N, 1)
+        world_points = (1.0 - frac) * p_n + frac * p_next
 
         return world_points
+
+    def resample_to_lattice_space(self, image: torch.Tensor,
+                                   lattice_width: int) -> torch.Tensor:
+        """
+        Resample an image from world space to lattice index space.
+
+        Creates a "rectified" image where:
+        - Rows correspond to scanlines (n)
+        - Columns correspond to positions along the scanline (u)
+
+        Uses inverse_mapping to find world-space sample locations, then
+        bilinear sampling via grid_sample.
+
+        Args:
+            image: Image tensor (C, H, W) or (H, W)
+            lattice_width: Number of samples along each scanline (u dimension)
+
+        Returns:
+            Rectified image in lattice space (C, n_lines, lattice_width)
+        """
+        if image.dim() == 2:
+            image = image.unsqueeze(0)
+            squeeze_output = True
+        else:
+            squeeze_output = False
+
+        C, H, W = image.shape
+        device = image.device
+
+        # Build a regular grid in lattice space: rows = scanlines, cols = u positions
+        n_coords = torch.arange(self.n_lines, dtype=torch.float32, device=device)
+        u_coords = torch.arange(lattice_width, dtype=torch.float32, device=device)
+
+        # 'ij' indexing: first arg varies along dim-0 (rows), second along dim-1 (cols)
+        n_grid, u_grid = torch.meshgrid(n_coords, u_coords, indexing='ij')
+        # Both have shape (n_lines, lattice_width)
+
+        # Flatten to (N, 2) with columns (u, n) for inverse_mapping
+        lattice_pts = torch.stack([u_grid.reshape(-1), n_grid.reshape(-1)], dim=1)
+
+        # Map every lattice pixel to its world-space (x, y)
+        world_pts = self.inverse_mapping(lattice_pts)  # (N, 2)
+
+        # Reshape back to the grid layout
+        x = world_pts[:, 0].reshape(self.n_lines, lattice_width)
+        y = world_pts[:, 1].reshape(self.n_lines, lattice_width)
+
+        # Normalise to [-1, 1] for grid_sample (x indexes W, y indexes H)
+        x_norm = 2.0 * x / (W - 1) - 1.0
+        y_norm = 2.0 * y / (H - 1) - 1.0
+
+        # grid_sample expects (N, H_out, W_out, 2)
+        grid = torch.stack([x_norm, y_norm], dim=-1).unsqueeze(0)
+
+        lattice_image = F.grid_sample(
+            image.unsqueeze(0), grid,
+            mode='bilinear', padding_mode='border', align_corners=True
+        ).squeeze(0)  # (C, n_lines, lattice_width)
+
+        if squeeze_output:
+            lattice_image = lattice_image.squeeze(0)
+
+        return lattice_image
+
+    def resample_from_lattice_space(self, lattice_image: torch.Tensor,
+                                     output_height: int, output_width: int) -> torch.Tensor:
+        """
+        Resample an image from lattice index space back to world space.
+
+        Uses forward_mapping to find each output pixel's lattice coordinates,
+        then bilinear sampling via grid_sample.
+
+        Args:
+            lattice_image: Image in lattice space (C, n_lines, lattice_width)
+            output_height: Desired output height in world space
+            output_width: Desired output width in world space
+
+        Returns:
+            Image in world space (C, output_height, output_width)
+        """
+        if lattice_image.dim() == 2:
+            lattice_image = lattice_image.unsqueeze(0)
+            squeeze_output = True
+        else:
+            squeeze_output = False
+
+        C, n_lines, lattice_width = lattice_image.shape
+        device = lattice_image.device
+
+        # Build a grid covering the output world space
+        y_coords = torch.arange(output_height, dtype=torch.float32, device=device)
+        x_coords = torch.arange(output_width, dtype=torch.float32, device=device)
+
+        y_grid, x_grid = torch.meshgrid(y_coords, x_coords, indexing='ij')
+        # Both have shape (output_height, output_width)
+
+        world_pts = torch.stack([x_grid.reshape(-1), y_grid.reshape(-1)], dim=1)
+
+        # Map to lattice coordinates (u, n)
+        lattice_pts = self.forward_mapping(world_pts)
+
+        u = lattice_pts[:, 0].reshape(output_height, output_width)
+        n = lattice_pts[:, 1].reshape(output_height, output_width)
+
+        # Normalise to [-1, 1] for grid_sample
+        # u indexes lattice_width (W dimension), n indexes n_lines (H dimension)
+        u_norm = 2.0 * u / (lattice_width - 1) - 1.0
+        n_norm = 2.0 * n / (n_lines - 1) - 1.0
+
+        grid = torch.stack([u_norm, n_norm], dim=-1).unsqueeze(0)
+
+        world_image = F.grid_sample(
+            lattice_image.unsqueeze(0), grid,
+            mode='bilinear', padding_mode='border', align_corners=True
+        ).squeeze(0)
+
+        if squeeze_output:
+            world_image = world_image.squeeze(0)
+
+        return world_image

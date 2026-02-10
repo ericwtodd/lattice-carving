@@ -85,11 +85,25 @@ examples/
   - ✓ Inverse: lattice index space → world space
   - ✓ Tested and validated for both rectangular and circular lattices
   - ✓ Visualization confirms circular world space → regular lattice space
-- Implement lattice-guided carving workflow:
-  1. Map image data to lattice index space
-  2. Compute seams in lattice space (using existing greedy algorithm)
-  3. Remove seam and update lattice
-  4. Map carved result back to world space
+- ✓ Implement lattice-guided carving workflow:
+  - ✓ `resample_to_lattice_space` — inverse-maps a regular lattice grid to world coords, samples via `grid_sample`
+  - ✓ `resample_from_lattice_space` — forward-maps world grid to lattice coords, samples via `grid_sample`
+  - ✓ `carve_image_lattice_guided` — full pipeline: resample → seam carve in lattice space → resample back
+  - ✓ `carve_image_traditional` — convenience wrapper for standard rectangular carving
+  - ✓ `carve_with_comparison` — runs both methods side-by-side
+- ✓ Vectorized mapping functions (replaced O(N*n_lines) Python loops with batched tensor ops)
+- ✓ Fixed forward_mapping for radial/circular lattices — tangent-projection penalty resolves
+  ambiguity when a scanline and its opposite both have 0 normal distance
+- ✓ Test suite (30 tests, all passing):
+  - Lattice construction (rectangular, circular)
+  - Round-trip mapping (rectangular identity, circular inverse↔forward)
+  - Resampling (rectangular identity, round-trip, shapes, grayscale)
+  - Energy functions (shape, flat interior, stripe edges)
+  - Seam computation (shape, continuity, removal)
+  - End-to-end traditional carving (width/height reduction, dtype)
+  - End-to-end lattice-guided carving (rectangular, circular, content change)
+
+**Next Steps:**
 - Test on circular carving (for bagel hole preservation)
 - Handle cyclic lattices for closed shapes
-- Optimize mapping functions (currently O(N*M) - can be improved)
+- Forward energy function (Rubinstein et al. 2008)
