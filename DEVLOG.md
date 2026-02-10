@@ -103,7 +103,41 @@ examples/
   - End-to-end traditional carving (width/height reduction, dtype)
   - End-to-end lattice-guided carving (rectangular, circular, content change)
 
-**Next Steps:**
-- Test on circular carving (for bagel hole preservation)
-- Handle cyclic lattices for closed shapes
-- Forward energy function (Rubinstein et al. 2008)
+### Paper Re-read — What We Got Wrong
+
+Re-read Sections 3.3, 3.5, 3.6, and 4.0 of the paper. Key findings:
+
+**Problem: Naive double-interpolation (our current approach)**
+Our `carve_image_lattice_guided` resamples pixel data V→L, carves seams in L,
+then resamples L→V. The paper explicitly warns against this (Section 3.3,
+Fig. 6): "this approach introduces significant blurring artifacts."
+
+**Paper's actual method ("carving the mapping", Section 3.3, Fig. 8):**
+1. Map the **energy** from V to L using forward mapping f (for seam computation)
+2. Find the seam in L (greedy or graph-cut)
+3. Carving the seam in L produces a **modified lattice** L* with a new inverse
+   mapping g*
+4. For each world-space pixel p_w, compute new position: p_w* = g*(f(p_w))
+5. Assign V*(p_w) = V_copy(p_w*) — a **single** lookup in a copy of V
+6. This means the actual pixel data is only sampled once, not twice
+
+**Seam Pairs (Section 3.6):**
+- Resize a local region without changing global image boundaries
+- Two user-defined windows: region of interest + pair region
+- Remove seam in region of interest, add compensating seam in pair region
+- Content is redistributed: the ROI shrinks, pair region expands (or vice versa)
+- This is how you'd shrink a bagel hole while expanding background
+
+**Cyclic Lattices (Section 3.5):**
+- For regions that wrap around (e.g., closed shapes like rings)
+- Connect the last lattice plane back to the first
+- Cyclic graph-cut: connect end nodes to start nodes
+- Cyclic greedy: use inverted Gaussian guide on energy to steer the seam
+  back to its starting point (Section 4.0.1, Fig. 12)
+
+**Next Steps — Implementation Plan:**
+1. Implement "carving the mapping" (replaces naive resample→carve→resample)
+2. Implement seam pairs for local region carving
+3. Implement cyclic lattices
+4. Forward energy function (Rubinstein et al. 2008)
+5. Visualizations and interactive demo
