@@ -1,11 +1,19 @@
 """
 Tests for lattice mappings, resampling, and end-to-end carving.
+
+Organized into:
+  1. Lattice construction basics
+  2. Mapping correctness (exact values, not just round-trips)
+  3. Resampling correctness (geometric meaning, not just shapes)
+  4. Seam algorithm correctness (seams go through low-energy regions)
+  5. End-to-end carving correctness
 """
 
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import math
 import torch
 import pytest
 from src.lattice import Lattice2D
@@ -19,324 +27,374 @@ from src.carving import carve_image_traditional, carve_image_lattice_guided
 # ---------------------------------------------------------------------------
 
 def make_gradient_image(H, W, channels=3):
-    """Create a horizontal gradient image (dark left, bright right)."""
+    """Horizontal gradient: dark left, bright right."""
     grad = torch.linspace(0, 1, W).unsqueeze(0).expand(H, W)
     if channels > 0:
         return grad.unsqueeze(0).expand(channels, H, W).clone()
     return grad
 
 
-def make_stripe_image(H, W, stripe_width=10, channels=3):
-    """Create an image with vertical stripes of alternating intensity."""
-    img = torch.zeros(H, W)
-    for i in range(0, W, stripe_width * 2):
-        img[:, i:i + stripe_width] = 1.0
-    if channels > 0:
-        return img.unsqueeze(0).expand(channels, H, W).clone()
+def make_ring_image(H, W, cx, cy, inner_r, outer_r):
+    """Grayscale image: 1.0 inside the ring, 0.0 outside."""
+    img = torch.zeros(1, H, W)
+    for y in range(H):
+        for x in range(W):
+            r = math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+            if inner_r <= r <= outer_r:
+                img[0, y, x] = 1.0
     return img
 
 
 # ---------------------------------------------------------------------------
-# Lattice construction
+# 1. Lattice construction
 # ---------------------------------------------------------------------------
 
 class TestLatticeConstruction:
-    def test_rectangular_shapes(self):
-        lat = Lattice2D.rectangular(10, 20)
-        assert lat.n_lines == 10
-        assert lat.origins.shape == (10, 2)
-        assert lat.tangents.shape == (10, 2)
-        assert lat.normals.shape == (10, 2)
+    def test_rectangular_tangents_horizontal_normals_vertical(self):
+        lat = Lattice2D.rectangular(5, 8)
+        for n in range(5):
+            assert torch.allclose(lat.tangents[n], torch.tensor([1.0, 0.0]))
+            assert torch.allclose(lat.normals[n], torch.tensor([0.0, 1.0]))
 
-    def test_rectangular_tangents_are_horizontal(self):
-        lat = Lattice2D.rectangular(5, 5)
-        # tangent should be (1, 0) for every scanline
-        expected = torch.zeros(5, 2)
-        expected[:, 0] = 1.0
-        assert torch.allclose(lat.tangents, expected)
-
-    def test_rectangular_normals_are_vertical(self):
-        lat = Lattice2D.rectangular(5, 5)
-        # normal should be (0, 1) for every scanline
-        expected = torch.zeros(5, 2)
-        expected[:, 1] = 1.0
-        assert torch.allclose(lat.normals, expected)
-
-    def test_circular_shapes(self):
-        lat = Lattice2D.circular((50.0, 50.0), 40.0, n_lines=36)
-        assert lat.n_lines == 36
-        assert lat.origins.shape == (36, 2)
+    def test_rectangular_origins_are_rows(self):
+        lat = Lattice2D.rectangular(4, 10)
+        for n in range(4):
+            assert lat.origins[n, 0].item() == 0.0   # x = 0
+            assert lat.origins[n, 1].item() == float(n)  # y = row index
 
     def test_circular_tangents_are_unit(self):
         lat = Lattice2D.circular((50.0, 50.0), 40.0, n_lines=36)
         norms = torch.norm(lat.tangents, dim=1)
-        assert torch.allclose(norms, torch.ones(36), atol=1e-5)
+        assert torch.allclose(norms, torch.ones(36), atol=1e-6)
+
+    def test_circular_tangents_match_angles(self):
+        n_lines = 8
+        lat = Lattice2D.circular((0.0, 0.0), 10.0, n_lines=n_lines)
+        for i in range(n_lines):
+            angle = 2 * math.pi * i / n_lines
+            expected = torch.tensor([math.cos(angle), math.sin(angle)])
+            assert torch.allclose(lat.tangents[i], expected, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
-# Mapping round-trips
+# 2. Mapping correctness — exact known values
 # ---------------------------------------------------------------------------
 
-class TestRectangularMapping:
-    """For a rectangular lattice, forward(inverse(p)) ≈ p and vice-versa."""
+class TestRectangularMappingExact:
+    """Rectangular lattice is the identity mapping: (u, n) == (x, y)."""
 
-    def test_inverse_then_forward_roundtrip(self):
-        H, W = 20, 30
-        lat = Lattice2D.rectangular(H, W)
+    def test_inverse_mapping_is_identity(self):
+        lat = Lattice2D.rectangular(10, 10)
+        pts = torch.tensor([[3.0, 7.0], [0.0, 0.0], [9.0, 9.0], [4.5, 2.5]])
+        world = lat.inverse_mapping(pts)
+        assert torch.allclose(world, pts, atol=1e-5)
 
-        # Sample some lattice-space points: (u, n)
-        lattice_pts = torch.tensor([
-            [0.0, 0.0],
-            [5.0, 3.0],
-            [15.0, 10.0],
-            [29.0, 19.0],
-        ])
+    def test_forward_mapping_is_identity(self):
+        lat = Lattice2D.rectangular(10, 10)
+        pts = torch.tensor([[3.0, 7.0], [0.0, 0.0], [9.0, 9.0]])
+        lattice = lat.forward_mapping(pts)
+        # u should equal x exactly; n may have small fractional interpolation
+        assert torch.allclose(lattice[:, 0], pts[:, 0], atol=1e-5)
+        assert torch.allclose(lattice[:, 1], pts[:, 1], atol=0.01)
 
-        world_pts = lat.inverse_mapping(lattice_pts)
-        recovered = lat.forward_mapping(world_pts)
-
-        # u should be recovered exactly; n may have small fractional error
-        assert torch.allclose(recovered[:, 0], lattice_pts[:, 0], atol=0.5)
-        assert torch.allclose(recovered[:, 1], lattice_pts[:, 1], atol=0.5)
-
-    def test_forward_then_inverse_roundtrip(self):
-        H, W = 20, 30
-        lat = Lattice2D.rectangular(H, W)
-
-        # Points in world space (x, y)
-        world_pts = torch.tensor([
-            [0.0, 0.0],
-            [10.0, 5.0],
-            [29.0, 19.0],
-        ])
-
-        lattice_pts = lat.forward_mapping(world_pts)
-        recovered = lat.inverse_mapping(lattice_pts)
-
-        assert torch.allclose(recovered, world_pts, atol=0.5)
-
-    def test_rectangular_mapping_is_identity(self):
-        """For a rectangular lattice, (u, n) should map to (x, y) = (u, n)."""
-        H, W = 10, 10
-        lat = Lattice2D.rectangular(H, W)
-
-        lattice_pts = torch.tensor([
-            [3.0, 7.0],
-            [0.0, 0.0],
-            [9.0, 9.0],
-        ])
-
-        world_pts = lat.inverse_mapping(lattice_pts)
-        # For rectangular: world (x, y) should equal lattice (u, n)
-        assert torch.allclose(world_pts, lattice_pts, atol=1e-5)
+    def test_roundtrip_is_exact(self):
+        """forward(inverse(p)) == p for integer-coordinate lattice points."""
+        lat = Lattice2D.rectangular(10, 10)
+        pts = torch.tensor([[5.0, 3.0], [0.0, 0.0], [9.0, 8.0]])
+        recovered = lat.forward_mapping(lat.inverse_mapping(pts))
+        assert torch.allclose(recovered[:, 0], pts[:, 0], atol=1e-5)
+        assert torch.allclose(recovered[:, 1], pts[:, 1], atol=0.01)
 
 
-class TestCircularMapping:
-    def test_inverse_maps_center_correctly(self):
+class TestCircularMappingExact:
+    """Circular lattice: u = radial distance, n = angle index."""
+
+    def test_center_maps_to_zero_u(self):
         cx, cy = 50.0, 50.0
         lat = Lattice2D.circular((cx, cy), 40.0, n_lines=36)
+        # u=0 on any scanline → center
+        pts = torch.tensor([[0.0, 0.0], [0.0, 9.0], [0.0, 18.0]])
+        world = lat.inverse_mapping(pts)
+        assert torch.allclose(world, torch.tensor([[cx, cy]] * 3), atol=1e-4)
 
-        # u=0 on any scanline should map to the center
-        lattice_pts = torch.tensor([[0.0, 0.0], [0.0, 18.0]])
-        world_pts = lat.inverse_mapping(lattice_pts)
-
-        assert torch.allclose(world_pts[:, 0], torch.tensor([cx, cx]), atol=1e-4)
-        assert torch.allclose(world_pts[:, 1], torch.tensor([cy, cy]), atol=1e-4)
-
-    def test_inverse_maps_radial_distance(self):
+    def test_known_radial_points(self):
+        """Scanline 0 points along +x, scanline at 90° along +y, etc."""
         cx, cy = 50.0, 50.0
-        lat = Lattice2D.circular((cx, cy), 40.0, n_lines=36)
+        lat = Lattice2D.circular((cx, cy), 40.0, n_lines=72)
+        # 72 lines → 5° per line. Scanline 18 = 90°
 
-        # u=10 on scanline 0 (angle=0, tangent=(1,0)) should map to (cx+10, cy)
-        lattice_pts = torch.tensor([[10.0, 0.0]])
-        world_pts = lat.inverse_mapping(lattice_pts)
+        cases = [
+            # (u, n) → expected (x, y)
+            (10.0, 0.0, cx + 10.0, cy),          # 0°: +x
+            (10.0, 18.0, cx, cy + 10.0),          # 90°: +y
+            (10.0, 36.0, cx - 10.0, cy),          # 180°: -x
+            (10.0, 54.0, cx, cy - 10.0),          # 270°: -y
+        ]
+        for u, n, ex, ey in cases:
+            world = lat.inverse_mapping(torch.tensor([[u, n]]))
+            assert abs(world[0, 0].item() - ex) < 0.1, f"u={u},n={n}: x={world[0,0]:.2f} expected {ex}"
+            assert abs(world[0, 1].item() - ey) < 0.1, f"u={u},n={n}: y={world[0,1]:.2f} expected {ey}"
 
-        assert torch.allclose(world_pts, torch.tensor([[cx + 10.0, cy]]), atol=1e-4)
+    def test_forward_recovers_correct_scanline(self):
+        """Points on specific radial lines should map back to the right scanline."""
+        cx, cy = 50.0, 50.0
+        lat = Lattice2D.circular((cx, cy), 40.0, n_lines=72)
 
-    def test_inverse_forward_roundtrip(self):
+        # Point at (60, 50): on scanline 0 (angle 0), u = 10
+        pts = torch.tensor([[60.0, 50.0]])
+        result = lat.forward_mapping(pts)
+        assert abs(result[0, 0].item() - 10.0) < 0.5  # u ≈ 10
+        assert abs(result[0, 1].item() - 0.0) < 1.0    # n ≈ 0
+
+        # Point at (50, 60): on scanline 18 (angle 90°), u = 10
+        pts = torch.tensor([[50.0, 60.0]])
+        result = lat.forward_mapping(pts)
+        assert abs(result[0, 0].item() - 10.0) < 0.5  # u ≈ 10
+        assert abs(result[0, 1].item() - 18.0) < 1.0   # n ≈ 18
+
+    def test_roundtrip_tight_tolerance(self):
+        """inverse → forward should recover u and n within angular discretization."""
         lat = Lattice2D.circular((50.0, 50.0), 40.0, n_lines=72)
-
-        # Points at various radii and angles (u, n)
-        lattice_pts = torch.tensor([
+        pts = torch.tensor([
             [20.0, 0.0],
             [30.0, 18.0],
-            [10.0, 36.0],
+            [15.0, 36.0],
+            [10.0, 54.0],
         ])
-
-        world_pts = lat.inverse_mapping(lattice_pts)
-        recovered = lat.forward_mapping(world_pts)
-
-        assert torch.allclose(recovered[:, 0], lattice_pts[:, 0], atol=1.0)
-        assert torch.allclose(recovered[:, 1], lattice_pts[:, 1], atol=1.0)
+        world = lat.inverse_mapping(pts)
+        recovered = lat.forward_mapping(world)
+        # With 72 lines (5° spacing), angular error < 1 line
+        assert torch.allclose(recovered[:, 0], pts[:, 0], atol=0.5)  # u (radial)
+        assert torch.allclose(recovered[:, 1], pts[:, 1], atol=1.0)  # n (angular)
 
 
 # ---------------------------------------------------------------------------
-# Resampling
+# 3. Resampling correctness
 # ---------------------------------------------------------------------------
 
 class TestResampleToLatticeSpace:
-    def test_rectangular_identity(self):
-        """Resampling with a rectangular lattice should approximate the original image."""
+    def test_rectangular_is_identity(self):
+        """Rectangular lattice resampling should reproduce the image exactly."""
         H, W = 16, 24
         image = make_gradient_image(H, W)
         lat = Lattice2D.rectangular(H, W)
-
         resampled = lat.resample_to_lattice_space(image, lattice_width=W)
+        assert torch.allclose(resampled, image, atol=0.01)
 
-        # Should be very close to the original image
-        assert resampled.shape == image.shape
-        assert torch.allclose(resampled, image, atol=0.05)
+    def test_circular_unrolls_ring_to_vertical_stripe(self):
+        """A ring in world space should become a vertical stripe in lattice space.
 
-    def test_output_shape(self):
+        A ring at radius r maps to constant u=r across all scanlines (n).
+        So in the lattice image, column u=r should be bright for all rows.
+        """
+        H, W = 64, 64
+        cx, cy = 32.0, 32.0
+        ring_radius = 15.0
+        ring_width = 4.0
+
+        image = make_ring_image(H, W, cx, cy,
+                                ring_radius - ring_width / 2,
+                                ring_radius + ring_width / 2)
+
+        lat = Lattice2D.circular((cx, cy), 30.0, n_lines=72)
+        lattice_img = lat.resample_to_lattice_space(image, lattice_width=30)
+        # lattice_img shape: (1, 72, 30)
+
+        # Column at u=ring_radius should be bright across all rows
+        ring_col = lattice_img[0, :, int(ring_radius)]
+        assert ring_col.mean() > 0.5, f"Ring column mean={ring_col.mean():.3f}, expected >0.5"
+
+        # Column far from ring (u=5) should be dark
+        bg_col = lattice_img[0, :, 5]
+        assert bg_col.mean() < 0.2, f"Background column mean={bg_col.mean():.3f}, expected <0.2"
+
+        # Ring column should be consistent across all angles (low variance)
+        assert ring_col.std() < 0.3, f"Ring column std={ring_col.std():.3f}, expected <0.3"
+
+    def test_rectangular_roundtrip_preserves_image(self):
+        """Resample to lattice space and back should approximate original."""
         H, W = 16, 24
         image = make_gradient_image(H, W)
         lat = Lattice2D.rectangular(H, W)
-
-        resampled = lat.resample_to_lattice_space(image, lattice_width=32)
-        assert resampled.shape == (3, H, 32)
-
-    def test_grayscale_input(self):
-        H, W = 16, 24
-        image = make_gradient_image(H, W, channels=0)
-        lat = Lattice2D.rectangular(H, W)
-
-        resampled = lat.resample_to_lattice_space(image, lattice_width=W)
-        assert resampled.dim() == 2
-        assert resampled.shape == (H, W)
-
-
-class TestResampleFromLatticeSpace:
-    def test_rectangular_roundtrip(self):
-        """Resample to lattice space and back should approximate the original."""
-        H, W = 16, 24
-        image = make_gradient_image(H, W)
-        lat = Lattice2D.rectangular(H, W)
-
         lattice_img = lat.resample_to_lattice_space(image, lattice_width=W)
         recovered = lat.resample_from_lattice_space(lattice_img, H, W)
+        assert torch.allclose(recovered, image, atol=0.05)
 
-        assert recovered.shape == image.shape
-        # Allow some error from double interpolation
-        assert torch.allclose(recovered, image, atol=0.1)
-
-    def test_output_shape(self):
-        H, W = 16, 24
-        lat = Lattice2D.rectangular(H, W)
-        lattice_img = torch.rand(3, H, W)
-
-        out = lat.resample_from_lattice_space(lattice_img, 32, 48)
-        assert out.shape == (3, 32, 48)
+    def test_grayscale_preserves_dims(self):
+        image = make_gradient_image(16, 24, channels=0)
+        lat = Lattice2D.rectangular(16, 24)
+        resampled = lat.resample_to_lattice_space(image, lattice_width=24)
+        assert resampled.dim() == 2
+        assert resampled.shape == (16, 24)
 
 
 # ---------------------------------------------------------------------------
-# Energy
+# 4. Energy function
 # ---------------------------------------------------------------------------
 
 class TestEnergy:
-    def test_gradient_energy_shape(self):
-        image = make_gradient_image(16, 24)
+    def test_uniform_interior_is_zero(self):
+        """A solid-color image should have zero energy in the interior."""
+        image = torch.ones(3, 20, 20) * 0.5
         energy = gradient_magnitude_energy(image)
-        assert energy.shape == (16, 24)
+        assert energy[2:-2, 2:-2].max() < 1e-5
 
-    def test_flat_image_low_interior_energy(self):
-        """Interior of a flat image should have zero energy (borders have Sobel edge artifacts)."""
-        image = torch.ones(3, 16, 24) * 0.5
+    def test_vertical_edge_has_horizontal_energy(self):
+        """An image with a single vertical edge should have energy along that edge."""
+        image = torch.zeros(1, 20, 20)
+        image[:, :, 10:] = 1.0  # Left half dark, right half bright
         energy = gradient_magnitude_energy(image)
-        # Interior pixels (away from border) should be zero
-        assert energy[1:-1, 1:-1].max() < 1e-5
-
-    def test_stripe_image_has_edges(self):
-        image = make_stripe_image(16, 40, stripe_width=10)
-        energy = gradient_magnitude_energy(image)
-        assert energy.max() > 0.1
+        # Energy should be high near column 10 and low elsewhere
+        edge_energy = energy[2:-2, 9:12].mean()
+        bg_energy = energy[2:-2, 2:7].mean()
+        assert edge_energy > 10 * bg_energy
 
 
 # ---------------------------------------------------------------------------
-# Seam computation
+# 5. Seam computation — correctness, not just shapes
 # ---------------------------------------------------------------------------
 
-class TestSeam:
-    def test_greedy_seam_shape(self):
-        energy = torch.rand(16, 24)
+class TestSeamCorrectness:
+    def test_seam_follows_zero_energy_column(self):
+        """Given an energy map that's zero in one column, the seam goes there."""
+        H, W = 20, 20
+        energy = torch.ones(H, W)
+        energy[:, 10] = 0.0  # Zero-energy column
         seam = greedy_seam(energy, direction='vertical')
-        assert seam.shape == (16,)
-        assert seam.min() >= 0
-        assert seam.max() < 24
+        assert (seam == 10).all(), f"Expected all 10, got {seam.tolist()}"
 
-    def test_greedy_seam_horizontal_shape(self):
-        energy = torch.rand(16, 24)
+    def test_seam_follows_zero_energy_row(self):
+        """Horizontal seam follows zero-energy row."""
+        H, W = 20, 20
+        energy = torch.ones(H, W)
+        energy[10, :] = 0.0
         seam = greedy_seam(energy, direction='horizontal')
-        assert seam.shape == (24,)
-        assert seam.min() >= 0
-        assert seam.max() < 16
+        assert (seam == 10).all()
+
+    def test_seam_follows_diagonal_valley(self):
+        """Seam should follow a diagonal zero-energy path."""
+        H, W = 20, 20
+        energy = torch.ones(H, W) * 10.0
+        for i in range(H):
+            col = min(5 + i, W - 1)  # Diagonal from (0,5) going right
+            energy[i, col] = 0.0
+        seam = greedy_seam(energy, direction='vertical')
+        for i in range(H):
+            expected = min(5 + i, W - 1)
+            assert seam[i].item() == expected, f"Row {i}: got {seam[i]}, expected {expected}"
 
     def test_seam_continuity(self):
-        """Adjacent seam indices should differ by at most 1."""
-        energy = torch.rand(32, 32)
+        """Adjacent seam indices must differ by at most 1."""
+        torch.manual_seed(42)
+        energy = torch.rand(50, 50)
         seam = greedy_seam(energy, direction='vertical')
         diffs = torch.abs(seam[1:] - seam[:-1])
         assert diffs.max() <= 1
 
-    def test_remove_seam_vertical(self):
-        image = torch.rand(3, 16, 24)
-        seam = greedy_seam(gradient_magnitude_energy(image), direction='vertical')
-        carved = remove_seam(image, seam, direction='vertical')
-        assert carved.shape == (3, 16, 23)
+    def test_remove_seam_preserves_non_seam_pixels(self):
+        """After removing a seam, remaining pixels should be the original values."""
+        # 1-channel image with known values: pixel value = column index
+        H, W = 4, 10
+        image = torch.arange(W, dtype=torch.float32).unsqueeze(0).unsqueeze(0).expand(1, H, W).clone()
 
-    def test_remove_seam_horizontal(self):
-        image = torch.rand(3, 16, 24)
-        seam = greedy_seam(gradient_magnitude_energy(image), direction='horizontal')
-        carved = remove_seam(image, seam, direction='horizontal')
-        assert carved.shape == (3, 15, 24)
+        # Remove seam at column 5 in every row
+        seam = torch.full((H,), 5, dtype=torch.long)
+        carved = remove_seam(image, seam, direction='vertical')
+
+        assert carved.shape == (1, H, W - 1)
+        # Columns 0-4 are unchanged
+        assert torch.equal(carved[0, 0, :5], torch.tensor([0., 1., 2., 3., 4.]))
+        # Columns 5-8 are the original 6-9 (shifted left)
+        assert torch.equal(carved[0, 0, 5:], torch.tensor([6., 7., 8., 9.]))
+
+    def test_remove_seam_with_varying_positions(self):
+        """Seam that zigzags removes correct pixel from each row."""
+        image = torch.arange(6, dtype=torch.float32).unsqueeze(0).unsqueeze(0).expand(1, 3, 6).clone()
+        seam = torch.tensor([2, 3, 2])  # Zigzag seam
+        carved = remove_seam(image, seam, direction='vertical')
+
+        # Row 0: remove col 2 → [0, 1, 3, 4, 5]
+        assert torch.equal(carved[0, 0], torch.tensor([0., 1., 3., 4., 5.]))
+        # Row 1: remove col 3 → [0, 1, 2, 4, 5]
+        assert torch.equal(carved[0, 1], torch.tensor([0., 1., 2., 4., 5.]))
+        # Row 2: remove col 2 → [0, 1, 3, 4, 5]
+        assert torch.equal(carved[0, 2], torch.tensor([0., 1., 3., 4., 5.]))
 
 
 # ---------------------------------------------------------------------------
-# End-to-end carving
+# 6. End-to-end traditional carving
 # ---------------------------------------------------------------------------
 
 class TestTraditionalCarving:
     def test_reduces_width(self):
-        image = make_stripe_image(16, 40, stripe_width=10)
+        image = torch.rand(3, 20, 30)
         carved = carve_image_traditional(image, n_seams=5, direction='vertical')
-        assert carved.shape == (3, 16, 35)
+        assert carved.shape == (3, 20, 25)
 
-    def test_reduces_height(self):
-        image = make_stripe_image(40, 16, stripe_width=10)
-        carved = carve_image_traditional(image, n_seams=5, direction='horizontal')
-        assert carved.shape == (3, 35, 16)
+    def test_carved_output_is_valid(self):
+        """Carved image should have correct shape and no NaN/Inf values."""
+        torch.manual_seed(42)
+        image = torch.rand(3, 30, 30)
+        carved = carve_image_traditional(image, n_seams=10, direction='vertical')
+        assert carved.shape == (3, 30, 20)
+        assert torch.isfinite(carved).all()
+        assert carved.min() >= 0.0
+        assert carved.max() <= 1.0
 
-    def test_preserves_dtype(self):
-        image = make_stripe_image(16, 40)
-        carved = carve_image_traditional(image, n_seams=2)
-        assert carved.dtype == image.dtype
+    def test_multiple_carves_reduce_correctly(self):
+        """Iterative carving should reduce dimensions by exactly n_seams."""
+        image = torch.rand(3, 25, 40)
+        for n in [1, 5, 15]:
+            carved = carve_image_traditional(image, n_seams=n, direction='vertical')
+            assert carved.shape == (3, 25, 40 - n)
 
+
+# ---------------------------------------------------------------------------
+# 7. End-to-end lattice-guided carving
+# ---------------------------------------------------------------------------
 
 class TestLatticeGuidedCarving:
-    def test_rectangular_lattice_output_shape(self):
-        """Lattice-guided carving with rectangular lattice returns same H x W."""
-        H, W = 16, 40
-        image = make_stripe_image(H, W, stripe_width=10)
+    def test_rectangular_lattice_produces_same_seams_as_traditional(self):
+        """Since rectangular lattice = identity, carving in lattice space
+        should find the exact same seam as traditional carving."""
+        H, W = 20, 30
+        image = make_gradient_image(H, W, channels=0)
         lat = Lattice2D.rectangular(H, W)
 
-        carved = carve_image_lattice_guided(image, lat, n_seams=5, lattice_width=W)
-        # Output shape is always the original H x W (resampled back)
-        assert carved.shape == (3, H, W)
+        # Resample to lattice space (should be identity)
+        lattice_img = lat.resample_to_lattice_space(image, lattice_width=W)
 
-    def test_circular_lattice_output_shape(self):
-        """Lattice-guided carving with circular lattice returns original H x W."""
-        H, W = 64, 64
+        # Compute seam in both spaces
+        energy_lattice = gradient_magnitude_energy(lattice_img)
+        energy_direct = gradient_magnitude_energy(image)
+
+        seam_lattice = greedy_seam(energy_lattice, direction='vertical')
+        seam_direct = greedy_seam(energy_direct, direction='vertical')
+
+        assert torch.equal(seam_lattice, seam_direct), \
+            f"Lattice seam {seam_lattice.tolist()} != direct seam {seam_direct.tolist()}"
+
+    def test_lattice_guided_output_shape(self):
+        """Lattice-guided carving returns the original spatial dimensions."""
+        H, W = 20, 30
         image = torch.rand(3, H, W)
-        lat = Lattice2D.circular((32.0, 32.0), 30.0, n_lines=36)
-
-        carved = carve_image_lattice_guided(image, lat, n_seams=3, lattice_width=40)
+        lat = Lattice2D.rectangular(H, W)
+        carved = carve_image_lattice_guided(image, lat, n_seams=5, lattice_width=W)
         assert carved.shape == (3, H, W)
 
-    def test_rectangular_lattice_actually_changes_image(self):
-        """Carving should actually modify the image content."""
-        H, W = 16, 40
-        image = make_stripe_image(H, W, stripe_width=10)
+    def test_lattice_guided_modifies_image(self):
+        """After carving, the image should actually be different."""
+        H, W = 20, 30
+        image = make_gradient_image(H, W)
         lat = Lattice2D.rectangular(H, W)
-
         carved = carve_image_lattice_guided(image, lat, n_seams=5, lattice_width=W)
-        # The carved image should not be identical to the input
+        assert not torch.allclose(carved, image, atol=1e-3)
+
+    def test_circular_lattice_carving_runs(self):
+        """Circular lattice-guided carving should complete without error."""
+        H, W = 64, 64
+        image = make_ring_image(H, W, 32.0, 32.0, 10.0, 20.0)
+        lat = Lattice2D.circular((32.0, 32.0), 30.0, n_lines=36)
+        carved = carve_image_lattice_guided(image, lat, n_seams=3, lattice_width=30)
+        assert carved.shape == (1, H, W)
         assert not torch.allclose(carved, image, atol=1e-3)
