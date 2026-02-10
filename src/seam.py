@@ -79,6 +79,63 @@ def greedy_seam(energy: torch.Tensor, direction: str = 'vertical') -> torch.Tens
         raise ValueError(f"Invalid direction: {direction}")
 
 
+def greedy_seam_windowed(energy: torch.Tensor, col_range: Tuple[int, int],
+                        direction: str = 'vertical') -> torch.Tensor:
+    """
+    Find greedy seam constrained to columns [col_start, col_end].
+
+    Same logic as greedy_seam but the seam is restricted to stay within
+    the specified column (or row) range.
+
+    Args:
+        energy: Energy map (H, W)
+        col_range: Tuple (start, end) — inclusive column range
+        direction: 'vertical' or 'horizontal'
+
+    Returns:
+        Seam indices (same format as greedy_seam)
+    """
+    H, W = energy.shape
+    col_start, col_end = col_range
+
+    if direction == 'vertical':
+        seam = torch.zeros(H, dtype=torch.long, device=energy.device)
+
+        # Start at argmin within the window in first row
+        seam[0] = col_start + torch.argmin(energy[0, col_start:col_end + 1])
+
+        for i in range(1, H):
+            prev_col = seam[i - 1].item()
+            left = max(col_start, prev_col - 1)
+            right = min(col_end, prev_col + 1)
+
+            neighbors = energy[i, left:right + 1]
+            local_min_idx = torch.argmin(neighbors)
+            seam[i] = left + local_min_idx
+
+        return seam
+
+    elif direction == 'horizontal':
+        seam = torch.zeros(W, dtype=torch.long, device=energy.device)
+        row_start, row_end = col_start, col_end  # reinterpret for horizontal
+
+        seam[0] = row_start + torch.argmin(energy[row_start:row_end + 1, 0])
+
+        for j in range(1, W):
+            prev_row = seam[j - 1].item()
+            top = max(row_start, prev_row - 1)
+            bottom = min(row_end, prev_row + 1)
+
+            neighbors = energy[top:bottom + 1, j]
+            local_min_idx = torch.argmin(neighbors)
+            seam[j] = top + local_min_idx
+
+        return seam
+
+    else:
+        raise ValueError(f"Invalid direction: {direction}")
+
+
 def multi_greedy_seam(energy: torch.Tensor, n_seams: int,
                      direction: str = 'vertical') -> List[torch.Tensor]:
     """

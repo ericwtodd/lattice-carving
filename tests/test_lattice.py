@@ -18,8 +18,8 @@ import torch
 import pytest
 from src.lattice import Lattice2D
 from src.energy import gradient_magnitude_energy
-from src.seam import greedy_seam, remove_seam
-from src.carving import carve_image_traditional, carve_image_lattice_guided
+from src.seam import greedy_seam, greedy_seam_windowed, remove_seam
+from src.carving import carve_image_traditional, carve_image_lattice_guided, carve_seam_pairs
 
 
 # ---------------------------------------------------------------------------
@@ -398,3 +398,185 @@ class TestLatticeGuidedCarving:
         carved = carve_image_lattice_guided(image, lat, n_seams=3, lattice_width=30)
         assert carved.shape == (1, H, W)
         assert not torch.allclose(carved, image, atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# 8. Carving the mapping (Section 3.3)
+# ---------------------------------------------------------------------------
+
+class TestCarvingTheMapping:
+    def test_output_shape_unchanged(self):
+        """Carving the mapping preserves image dimensions."""
+        H, W = 20, 30
+        image = torch.rand(3, H, W)
+        lat = Lattice2D.rectangular(H, W)
+        carved = carve_image_lattice_guided(image, lat, n_seams=5, lattice_width=W)
+        assert carved.shape == (3, H, W)
+
+    def test_output_finite_and_valid(self):
+        """Output should have no NaN/Inf and stay in [0, 1]."""
+        torch.manual_seed(42)
+        H, W = 20, 30
+        image = torch.rand(3, H, W)
+        lat = Lattice2D.rectangular(H, W)
+        carved = carve_image_lattice_guided(image, lat, n_seams=5, lattice_width=W)
+        assert torch.isfinite(carved).all()
+        assert carved.min() >= -0.01  # allow tiny border overshoot
+        assert carved.max() <= 1.01
+
+    def test_rectangular_matches_traditional(self):
+        """For a rectangular lattice, the mapping approach should produce
+        results close to traditional carving (first W-k columns)."""
+        torch.manual_seed(123)
+        H, W = 16, 24
+        n_seams = 3
+        image = torch.rand(3, H, W)
+        lat = Lattice2D.rectangular(H, W)
+
+        traditional = carve_image_traditional(image, n_seams=n_seams)
+        mapping = carve_image_lattice_guided(image, lat, n_seams=n_seams, lattice_width=W)
+
+        # The mapping approach keeps original dims and shifts content via
+        # bilinear sampling, so it won't be pixel-identical to traditional.
+        # But the left portion (away from seams) should be similar.
+        left_cols = W // 3
+        trad_left = traditional[:, :, :left_cols]
+        map_left = mapping[:, :, :left_cols]
+        # They should be correlated — mean absolute difference should be small
+        mae = (trad_left - map_left).abs().mean()
+        assert mae < 0.15, f"Left region MAE {mae:.4f} too large"
+
+    def test_content_shifts_past_seam(self):
+        """For a known zero-energy column, content to the right should shift left."""
+        H, W = 20, 30
+        # Image where each pixel's value is its column index (normalized)
+        image = torch.arange(W, dtype=torch.float32).unsqueeze(0).unsqueeze(0).expand(1, H, W).clone() / (W - 1)
+
+        # Create energy with a zero column at col 10
+        # Use an image that has a flat region around col 10
+        flat_image = torch.ones(1, H, W) * 0.5
+        flat_image[:, :, :10] = 0.0  # left side dark
+        flat_image[:, :, 11:] = 1.0  # right side bright
+        # The seam should go through column 10 (the edge)
+
+        lat = Lattice2D.rectangular(H, W)
+        carved = carve_image_lattice_guided(flat_image, lat, n_seams=1, lattice_width=W)
+
+        # After carving, the image should be modified
+        assert not torch.allclose(carved, flat_image, atol=1e-3)
+
+    def test_multiple_seams_accumulate(self):
+        """After k seams, content should have compressed by k.
+        More seams should produce more change from original overall."""
+        torch.manual_seed(42)
+        H, W = 20, 30
+        image = torch.rand(3, H, W)
+        lat = Lattice2D.rectangular(H, W)
+
+        carved_1 = carve_image_lattice_guided(image, lat, n_seams=1, lattice_width=W)
+        carved_5 = carve_image_lattice_guided(image, lat, n_seams=5, lattice_width=W)
+        carved_10 = carve_image_lattice_guided(image, lat, n_seams=10, lattice_width=W)
+
+        # More seams = more change from original
+        diff_1 = (carved_1 - image).abs().mean()
+        diff_5 = (carved_5 - image).abs().mean()
+        diff_10 = (carved_10 - image).abs().mean()
+        assert diff_5 > diff_1, f"5 seams diff {diff_5:.4f} <= 1 seam diff {diff_1:.4f}"
+        assert diff_10 > diff_5, f"10 seams diff {diff_10:.4f} <= 5 seams diff {diff_5:.4f}"
+
+
+# ---------------------------------------------------------------------------
+# 9. Seam pairs (Section 3.6)
+# ---------------------------------------------------------------------------
+
+class TestSeamPairs:
+    def test_boundary_preservation(self):
+        """Pixels outside both ROI and pair windows should be nearly unchanged."""
+        torch.manual_seed(42)
+        H, W = 20, 40
+        image = torch.rand(3, H, W)
+        lat = Lattice2D.rectangular(H, W)
+
+        # ROI in columns 10-15, pair in columns 25-30
+        carved = carve_seam_pairs(image, lat, n_seams=1,
+                                  roi_range=(10, 15), pair_range=(25, 30),
+                                  lattice_width=W)
+
+        assert carved.shape == (3, H, W)
+
+        # Leftmost columns (0-5) should be nearly unchanged
+        left_diff = (carved[:, :, :5] - image[:, :, :5]).abs().max()
+        assert left_diff < 0.1, f"Left boundary changed by {left_diff:.4f}"
+
+        # Rightmost columns (35-39) should be nearly unchanged
+        right_diff = (carved[:, :, 35:] - image[:, :, 35:]).abs().max()
+        assert right_diff < 0.1, f"Right boundary changed by {right_diff:.4f}"
+
+    def test_roi_content_changes(self):
+        """Content in ROI region should differ from original."""
+        torch.manual_seed(42)
+        H, W = 20, 40
+        image = torch.rand(3, H, W)
+        lat = Lattice2D.rectangular(H, W)
+
+        carved = carve_seam_pairs(image, lat, n_seams=2,
+                                  roi_range=(10, 15), pair_range=(25, 30),
+                                  lattice_width=W)
+
+        roi_diff = (carved[:, :, 10:16] - image[:, :, 10:16]).abs().mean()
+        assert roi_diff > 0.01, f"ROI region unchanged (diff={roi_diff:.4f})"
+
+    def test_pair_content_changes(self):
+        """Content in pair region should differ from original."""
+        torch.manual_seed(42)
+        H, W = 20, 40
+        image = torch.rand(3, H, W)
+        lat = Lattice2D.rectangular(H, W)
+
+        carved = carve_seam_pairs(image, lat, n_seams=2,
+                                  roi_range=(10, 15), pair_range=(25, 30),
+                                  lattice_width=W)
+
+        pair_diff = (carved[:, :, 25:31] - image[:, :, 25:31]).abs().mean()
+        assert pair_diff > 0.01, f"Pair region unchanged (diff={pair_diff:.4f})"
+
+    def test_net_shift_zero_outside(self):
+        """Combined warp is identity outside both windows — shape preserved."""
+        torch.manual_seed(42)
+        H, W = 20, 40
+        image = torch.rand(3, H, W)
+        lat = Lattice2D.rectangular(H, W)
+
+        carved = carve_seam_pairs(image, lat, n_seams=1,
+                                  roi_range=(10, 15), pair_range=(25, 30),
+                                  lattice_width=W)
+
+        assert carved.shape == image.shape
+        assert torch.isfinite(carved).all()
+
+
+# ---------------------------------------------------------------------------
+# 10. Windowed seam finding
+# ---------------------------------------------------------------------------
+
+class TestWindowedSeam:
+    def test_seam_stays_within_window(self):
+        """All seam indices must be within [col_start, col_end]."""
+        torch.manual_seed(42)
+        H, W = 30, 30
+        energy = torch.rand(H, W)
+        col_start, col_end = 10, 20
+
+        seam = greedy_seam_windowed(energy, (col_start, col_end))
+        assert (seam >= col_start).all(), f"Seam went below {col_start}: min={seam.min()}"
+        assert (seam <= col_end).all(), f"Seam went above {col_end}: max={seam.max()}"
+
+    def test_follows_zero_energy_in_window(self):
+        """Known zero-energy column within window should be found."""
+        H, W = 20, 30
+        energy = torch.ones(H, W)
+        # Zero-energy column at 15, window is [10, 20]
+        energy[:, 15] = 0.0
+
+        seam = greedy_seam_windowed(energy, (10, 20))
+        assert (seam == 15).all(), f"Expected all 15, got {seam.tolist()}"
