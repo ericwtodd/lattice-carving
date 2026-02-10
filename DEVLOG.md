@@ -80,14 +80,16 @@ examples/
   - GPU acceleration working (CUDA)
 
 **Next Steps:**
-- Implement lattice mapping functions (forward/inverse)
-  - Forward: world space → lattice index space
-  - Inverse: lattice index space → world space
+- ✓ Implement lattice mapping functions (forward/inverse)
+  - ✓ Forward: world space → lattice index space
+  - ✓ Inverse: lattice index space → world space
+  - ✓ Tested and validated for both rectangular and circular lattices
+  - ✓ Visualization confirms circular world space → regular lattice space
 - Implement lattice-guided carving workflow:
-  1. Create lattice around region of interest
-  2. Map image data to lattice index space
-  3. Compute seams in lattice space
-  4. Map carved lattice back to world space
-- Add visualization tools for lattices
+  1. Map image data to lattice index space
+  2. Compute seams in lattice space (using existing greedy algorithm)
+  3. Remove seam and update lattice
+  4. Map carved result back to world space
 - Test on circular carving (for bagel hole preservation)
 - Handle cyclic lattices for closed shapes
+- Optimize mapping functions (currently O(N*M) - can be improved)

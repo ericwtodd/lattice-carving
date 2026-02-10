@@ -115,13 +115,70 @@ class Lattice2D:
 
         f: V → L
 
+        For 2D, we map (x, y) in world space to (u, n) in lattice space where:
+        - u: position along the scanline
+        - n: which scanline (can be fractional for interpolation)
+
+        Based on Section 3.2.1 of the paper (adapted for 2D).
+
         Args:
             world_points: Points in world space (N, 2)
 
         Returns:
-            Points in lattice index space (N, 2)
+            Points in lattice index space (N, 2) with (u, n) coordinates
         """
-        raise NotImplementedError("Forward mapping needs implementation")
+        N = world_points.shape[0]
+        device = world_points.device
+
+        lattice_points = torch.zeros(N, 2, device=device)
+
+        for i in range(N):
+            p_w = world_points[i]  # (x, y)
+
+            # Find closest scanline by checking distance to each
+            min_dist = float('inf')
+            best_n = 0
+
+            for n in range(self.n_lines):
+                # Vector from scanline origin to point
+                v = p_w - self.origins[n]
+
+                # Distance along normal direction
+                dist = torch.abs(torch.dot(v, self.normals[n]))
+
+                if dist < min_dist:
+                    min_dist = dist
+                    best_n = n
+
+            # Now compute position along the tangent and fractional scanline index
+            # For scanline n, project point onto it
+            n = best_n
+            v = p_w - self.origins[n]
+
+            # Position along tangent (u coordinate)
+            u = torch.dot(v, self.tangents[n])
+
+            # Fractional scanline position
+            # Check neighboring scanlines for interpolation
+            if n < self.n_lines - 1:
+                dist_to_n = torch.abs(torch.dot(v, self.normals[n]))
+                v_next = p_w - self.origins[n + 1]
+                dist_to_next = torch.abs(torch.dot(v_next, self.normals[n + 1]))
+
+                # Linear interpolation between scanlines
+                total_dist = dist_to_n + dist_to_next
+                if total_dist > 1e-6:
+                    frac = dist_to_n / total_dist
+                    n_frac = n + frac
+                else:
+                    n_frac = float(n)
+            else:
+                n_frac = float(n)
+
+            lattice_points[i, 0] = u
+            lattice_points[i, 1] = n_frac
+
+        return lattice_points
 
     def inverse_mapping(self, lattice_points: torch.Tensor) -> torch.Tensor:
         """
@@ -129,10 +186,39 @@ class Lattice2D:
 
         g: L → V
 
+        For 2D, we map (u, n) in lattice space to (x, y) in world space where:
+        - u: position along the scanline
+        - n: which scanline (can be fractional for interpolation)
+
         Args:
-            lattice_points: Points in lattice index space (N, 2)
+            lattice_points: Points in lattice index space (N, 2) with (u, n)
 
         Returns:
-            Points in world space (N, 2)
+            Points in world space (N, 2) with (x, y)
         """
-        raise NotImplementedError("Inverse mapping needs implementation")
+        N = lattice_points.shape[0]
+        device = lattice_points.device
+
+        world_points = torch.zeros(N, 2, device=device)
+
+        for i in range(N):
+            u, n_frac = lattice_points[i]
+
+            # Get integer scanline index and fractional part
+            n = int(torch.floor(n_frac).item())
+            frac = (n_frac - n).item()
+
+            # Clamp to valid range
+            n = max(0, min(n, self.n_lines - 1))
+
+            # Get position on scanline n
+            p_n = self.origins[n] + u * self.tangents[n]
+
+            # If fractional, interpolate with next scanline
+            if frac > 1e-6 and n < self.n_lines - 1:
+                p_next = self.origins[n + 1] + u * self.tangents[n + 1]
+                world_points[i] = (1 - frac) * p_n + frac * p_next
+            else:
+                world_points[i] = p_n
+
+        return world_points
