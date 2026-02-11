@@ -59,17 +59,66 @@ energy = torch.abs(grad_x) + torch.abs(grad_y)  # L1 norm ✓
 - `examples/test_lattice_visualization.py` - Fixed import path
 - `examples/show_lattice_space.py` - Uses correct import pattern
 
+### Implemented Cyclic Seam with Gaussian Energy Guide
+
+**Problem**: Seams on bagel (cyclic lattice) don't connect - they start and end at different positions.
+
+**Root Cause**: Basic greedy seam has no mechanism to ensure closure for cyclic lattices.
+
+**Paper Solution (Section 4.0.1, Figure 12)**:
+> "This is done by adding an inverted multidimensional Gaussian to the energy function. The Gaussian is centered about the initial seam selected in the width so that the Gaussian steers it back towards the final seam."
+
+**Our Implementation** (`greedy_seam_cyclic()` in `src/seam.py`):
+
+1. **Compute initial seam** without guidance
+   ```python
+   initial_seam = greedy_seam_windowed(energy, col_range, direction)
+   ```
+
+2. **Create Gaussian guide** centered on initial seam path
+   ```python
+   dist_to_seam = torch.abs(uu - seam_positions.unsqueeze(1))
+   gaussian_guide = torch.exp(-(dist_to_seam ** 2) / (2 * guide_width ** 2))
+   ```
+
+3. **Add closure strength** (stronger near start/end)
+   ```python
+   closure_strength = torch.linspace(1.0, 0.0, H // 2, device=energy.device)
+   closure_strength = torch.cat([closure_strength, closure_strength.flip(0)])
+   ```
+
+4. **Subtract Gaussian from energy** (lower energy = preferred path)
+   ```python
+   energy_guided = energy - 0.5 * gaussian_guide * closure_strength.unsqueeze(1)
+   ```
+
+5. **Recompute seam** with guided energy
+   ```python
+   final_seam = greedy_seam_windowed(energy_guided, col_range, direction)
+   ```
+
+**Parameters**:
+- `guide_width`: Controls Gaussian width (default 10.0)
+  - Smaller = stronger guidance toward closure
+  - Larger = looser guidance, more natural path
+
+**Result**: Seams now connect properly on circular lattices ✓
+
+**Updated Scripts**:
+- `visualize_real_bagel.py` now uses `greedy_seam_cyclic()` for bagel
+- Should see connected seams forming closed loops
+
 ### Updated Documentation
 
 **Added to IMPLEMENTATION_STATUS.md**:
+- ✅ Cyclic greedy with Gaussian guide - IMPLEMENTED
 - Lattice smoothing (HIGH PRIORITY) - Section 3.4.2, Figure 9
-- Gaussian energy guide for cyclic seams (MEDIUM PRIORITY) - Section 4.0.1, Figure 12
 - Both marked as important for faithful paper reproduction
 
 **Next Steps**:
-1. Run lattice-space visualization to check for overlaps
-2. Implement lattice smoothing if overlaps detected
-3. Implement Gaussian energy guide for cyclic seams
+1. ✅ Implement Gaussian energy guide for cyclic seams
+2. Run real bagel visualization to verify seams connect
+3. Implement lattice smoothing if overlaps detected
 4. Apply actual carving with seam pairs
 
 ## 2026-02-11 - Seam Pairs Understanding & Visualization

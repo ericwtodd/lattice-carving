@@ -2,6 +2,20 @@
 
 Tracking implementation of "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation" (Flynn et al., 2021) for 2D images.
 
+**Goal**: Faithful reproduction of the paper's lattice-guided seam carving approach.
+
+**Key Paper Sections Referenced**:
+- Section 3.1: Lattice Structure
+- Section 3.2: Energy Functions
+- Section 3.3: Carving the Mapping (critical - avoids double interpolation)
+- Section 3.4.2: Lattice Smoothing
+- Section 3.5: Cyclic Lattices
+- Section 3.6: Seam Pairs
+- Section 4.0.1: Greedy Seam with Gaussian Guide
+- Section 5.1.1: Image Energy (Equation 6)
+- Figure 9: Lattice from User Curves
+- Figure 12: Cyclic Seam with Energy Guide
+
 ## Paper Implementation Checklist
 
 ### Core Components (Section 3)
@@ -31,12 +45,15 @@ Tracking implementation of "Generalized Fluid Carving with Fast Lattice-Guided S
 - [x] Multi-greedy seam (multiple starting points)
 - [x] Windowed greedy seam (for seam pairs)
 - [ ] Graph-cut optimal seam (slow, mentioned but not needed)
-- [ ] **Cyclic greedy with Gaussian guide (Section 4.0.1, Figure 12)** — MEDIUM PRIORITY
-  - Add inverted multidimensional Gaussian to energy function
-  - Gaussian centered on initial seam position
-  - Steers seam back to starting point for cyclic lattices
-  - Ensures seam starts and ends at same location
-  - Paper: "guarantees the seam in the final 2D slice is reachable by the seam in the initial 2D slice"
+- [x] **Cyclic greedy with Gaussian guide (Section 4.0.1, Figure 12)** ✓ IMPLEMENTED
+  - Computes initial seam without guide
+  - Creates inverted Gaussian centered on initial seam path
+  - Subtracts Gaussian from energy (lowers energy near initial path)
+  - Uses closure strength that increases near start/end
+  - Recomputes seam with guided energy
+  - Ensures seam connects (starts and ends at same position)
+  - Paper quote: "adding an inverted multidimensional Gaussian to the energy function... steers it back towards the final seam"
+  - Implementation: `greedy_seam_cyclic()` in `src/seam.py`
 
 #### ✅ Carving the Mapping (Section 3.3) - CRITICAL
 - [x] Resample energy to lattice space (NOT pixel data)

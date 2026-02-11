@@ -79,6 +79,78 @@ def greedy_seam(energy: torch.Tensor, direction: str = 'vertical') -> torch.Tens
         raise ValueError(f"Invalid direction: {direction}")
 
 
+def greedy_seam_cyclic(energy: torch.Tensor, col_range: Tuple[int, int],
+                      direction: str = 'vertical', guide_width: float = 10.0) -> torch.Tensor:
+    """
+    Find greedy seam for cyclic lattices with Gaussian energy guide.
+
+    For cyclic lattices (closed curves like circles), we need the seam to
+    start and end at the same u-position. This is done by:
+    1. Computing an initial seam
+    2. Adding an inverted Gaussian centered on the initial seam
+    3. Recomputing with the guided energy
+
+    From paper Section 4.0.1, Figure 12.
+
+    Args:
+        energy: Energy map (H, W)
+        col_range: Tuple (start, end) — inclusive column range
+        direction: 'vertical' or 'horizontal'
+        guide_width: Width of Gaussian guide (smaller = stronger guidance)
+
+    Returns:
+        Seam indices that start and end at same position
+    """
+    H, W = energy.shape
+    col_start, col_end = int(col_range[0]), int(col_range[1])
+
+    # Step 1: Compute initial seam without guide
+    initial_seam = greedy_seam_windowed(energy, col_range, direction)
+
+    # Step 2: Create Gaussian energy guide centered on initial seam
+    # The guide steers the seam back to its starting position
+    if direction == 'vertical':
+        # Create coordinate grids
+        n_coords = torch.arange(H, device=energy.device, dtype=torch.float32)
+        u_coords = torch.arange(W, device=energy.device, dtype=torch.float32)
+        nn, uu = torch.meshgrid(n_coords, u_coords, indexing='ij')
+
+        # Initial seam position (we want to end here too)
+        initial_u = initial_seam[0].float()
+
+        # Distance from each pixel to the initial seam path
+        # For cyclic, the seam should curve back to initial_u at the end
+        seam_positions = initial_seam.float()
+
+        # Compute distance to seam at each scanline
+        dist_to_seam = torch.abs(uu - seam_positions.unsqueeze(1))
+
+        # Inverted Gaussian: low energy near the initial seam path
+        # This attracts the seam to follow a path that closes
+        gaussian_guide = torch.exp(-(dist_to_seam ** 2) / (2 * guide_width ** 2))
+
+        # Invert: high Gaussian = low energy addition
+        # We add negative of this to make the seam prefer closing
+        energy_guided = energy.clone()
+
+        # Add stronger guidance near the start and end to force closure
+        closure_strength = torch.linspace(1.0, 0.0, H // 2, device=energy.device)
+        closure_strength = torch.cat([closure_strength, closure_strength.flip(0)])
+        if len(closure_strength) < H:
+            closure_strength = torch.nn.functional.pad(closure_strength, (0, H - len(closure_strength)))
+
+        # Subtract Gaussian (lower energy = preferred path)
+        energy_guided = energy - 0.5 * gaussian_guide * closure_strength.unsqueeze(1)
+
+    else:
+        raise NotImplementedError("Cyclic seam currently only for vertical direction")
+
+    # Step 3: Recompute seam with guided energy
+    final_seam = greedy_seam_windowed(energy_guided, col_range, direction)
+
+    return final_seam
+
+
 def greedy_seam_windowed(energy: torch.Tensor, col_range: Tuple[int, int],
                         direction: str = 'vertical') -> torch.Tensor:
     """
