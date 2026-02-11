@@ -49,6 +49,44 @@ def create_bagel(size=512, hole_radius=0.2, bagel_radius=0.5, device='cpu'):
     return image.clamp(0, 1)
 
 
+def create_arch(size=512, device='cpu'):
+    """
+    Create an arch test image (Figure 3 from paper).
+
+    Semicircular arch on a plain background.
+    """
+    y, x = torch.meshgrid(
+        torch.arange(size, device=device, dtype=torch.float32),
+        torch.arange(size, device=device, dtype=torch.float32),
+        indexing='ij'
+    )
+
+    # Arch parameters
+    center_x = size / 2
+    base_y = size * 0.75  # Arch base at 75% down
+    radius = size * 0.35  # Arch radius
+    thickness = size * 0.08  # Arch thickness
+
+    # Distance from arch center
+    dist_from_center = torch.sqrt((x - center_x)**2 + (y - base_y)**2)
+
+    # Create arch (semicircle above the base)
+    image = torch.ones(size, size, device=device) * 0.9  # Light background
+
+    # Arch is dark, only upper half (y < base_y)
+    in_arch = (dist_from_center > radius - thickness/2) & \
+              (dist_from_center < radius + thickness/2) & \
+              (y < base_y)
+
+    image[in_arch] = 0.2
+
+    # Add some texture to arch
+    texture = 0.05 * torch.sin(30 * torch.atan2(y - base_y, x - center_x))
+    image[in_arch] += texture[in_arch]
+
+    return image.clamp(0, 1)
+
+
 def create_river(size=512, device='cpu'):
     """Create a river test image - horizontal flowing river."""
     y, x = torch.meshgrid(
@@ -123,16 +161,17 @@ def visualize_lattice_on_image(image, lattice, n_samples=20):
     return img_rgb
 
 
-def visualize_seams_on_world_energy(energy, u_map, roi_seam, pair_seam, n_map):
+def visualize_seams_on_world_energy(energy, lattice, roi_seam, pair_seam):
     """
-    Overlay seam positions onto world-space energy map (VECTORIZED).
+    Overlay seam positions onto world-space energy map.
+
+    Uses inverse_mapping to convert seam positions from lattice space to world space.
 
     Args:
         energy: (H, W) energy map
-        u_map: (H, W) precomputed u-coordinates for each pixel
-        roi_seam: (n_lines,) seam positions in lattice space
-        pair_seam: (n_lines,) seam positions in lattice space
-        n_map: (H, W) precomputed n-coordinates for each pixel
+        lattice: Lattice2D instance
+        roi_seam: (n_lines,) seam u-positions in lattice space
+        pair_seam: (n_lines,) seam u-positions in lattice space
     """
     H, W = energy.shape
     device = energy.device
@@ -141,25 +180,54 @@ def visualize_seams_on_world_energy(energy, u_map, roi_seam, pair_seam, n_map):
     energy_norm = (energy - energy.min()) / (energy.max() - energy.min() + 1e-8)
     energy_rgb = torch.stack([energy_norm, energy_norm, energy_norm], dim=0)
 
-    # Interpolate the seam positions at each pixel's n coordinate
-    from src.carving import _interpolate_seam
-    roi_seam_interp = _interpolate_seam(roi_seam, n_map)  # (H, W)
-    pair_seam_interp = _interpolate_seam(pair_seam, n_map)  # (H, W)
+    n_lines = len(roi_seam)
 
-    # Find pixels near each seam (vectorized)
-    threshold = 3.0
+    # Convert ROI seam from lattice space to world space
+    # For each scanline n, seam is at position (u_seam[n], n)
+    roi_lattice_pts = torch.stack([
+        roi_seam,  # u coordinates
+        torch.arange(n_lines, dtype=torch.float32, device=device)  # n coordinates
+    ], dim=1)  # (n_lines, 2)
 
+    roi_world_pts = lattice.inverse_mapping(roi_lattice_pts)  # (n_lines, 2) -> (x, y)
+
+    # Convert pair seam from lattice space to world space
+    pair_lattice_pts = torch.stack([
+        pair_seam,
+        torch.arange(n_lines, dtype=torch.float32, device=device)
+    ], dim=1)
+
+    pair_world_pts = lattice.inverse_mapping(pair_lattice_pts)  # (n_lines, 2) -> (x, y)
+
+    # Draw seams as lines on the energy map
     # ROI seam (yellow)
-    roi_mask = torch.abs(u_map - roi_seam_interp) < threshold
-    energy_rgb[0, roi_mask] = 1.0  # Red
-    energy_rgb[1, roi_mask] = 1.0  # Green (Red + Green = Yellow)
-    energy_rgb[2, roi_mask] = 0.0  # Blue
+    for i in range(n_lines):
+        x, y = roi_world_pts[i]
+        xi, yi = int(round(x.item())), int(round(y.item()))
+
+        # Draw a small circle around the point
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                if dx*dx + dy*dy <= 4:  # Circle of radius 2
+                    yy, xx = yi + dy, xi + dx
+                    if 0 <= xx < W and 0 <= yy < H:
+                        energy_rgb[0, yy, xx] = 1.0  # Red
+                        energy_rgb[1, yy, xx] = 1.0  # Green (yellow)
+                        energy_rgb[2, yy, xx] = 0.0
 
     # Pair seam (green)
-    pair_mask = torch.abs(u_map - pair_seam_interp) < threshold
-    energy_rgb[0, pair_mask] = 0.0  # Red
-    energy_rgb[1, pair_mask] = 1.0  # Green
-    energy_rgb[2, pair_mask] = 0.0  # Blue
+    for i in range(n_lines):
+        x, y = pair_world_pts[i]
+        xi, yi = int(round(x.item())), int(round(y.item()))
+
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                if dx*dx + dy*dy <= 4:
+                    yy, xx = yi + dy, xi + dx
+                    if 0 <= xx < W and 0 <= yy < H:
+                        energy_rgb[0, yy, xx] = 0.0
+                        energy_rgb[1, yy, xx] = 1.0  # Green
+                        energy_rgb[2, yy, xx] = 0.0
 
     return energy_rgb
 
@@ -244,7 +312,7 @@ def debug_bagel():
 
     # Row 1, Col 3: Energy map with seam pairs overlayed
     print("   Creating world-space seam visualization...")
-    energy_with_seams = visualize_seams_on_world_energy(energy, u_map, roi_seam, pair_seam, n_map)
+    energy_with_seams = visualize_seams_on_world_energy(energy, lattice, roi_seam, pair_seam)
     axes[0, 2].imshow(energy_with_seams.permute(1, 2, 0).cpu().numpy())
     axes[0, 2].set_title('Energy + Seam Pairs (World Space)\nYellow=ROI (shrink), Green=Pair (expand)', fontsize=12, fontweight='bold')
     axes[0, 2].axis('off')
@@ -299,7 +367,7 @@ def debug_bagel():
 def debug_river():
     """Debug river lattice carving step-by-step."""
     print("="*70)
-    print("DEBUGGING: River Lattice Carving")
+    print("DEBUGGING: River Lattice Carving with Curved Lattice")
     print("="*70)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -311,58 +379,121 @@ def debug_river():
     H, W = image.shape
     print(f"   Image size: {H}×{W}")
 
-    # For river, use rectangular lattice (horizontal scanlines)
-    print("\n2. Creating rectangular lattice...")
-    lattice = Lattice2D.rectangular(height=H, width=W, device=device)
+    # River centerline function (matches the sinusoidal curve in create_river)
+    river_center_y = H / 2
+    amplitude = 0.3 * H / 2  # 0.3 from create_river, scaled to pixels
+    frequency = 3.0  # from create_river
+
+    def river_centerline(x):
+        """River centerline: y = center + amplitude * sin(frequency * x_norm)"""
+        # x is in pixel coordinates [0, W]
+        # Normalize to [-1, 1] range for sin function
+        x_norm = 2 * x / W - 1
+        return river_center_y + amplitude * np.sin(frequency * x_norm)
+
+    # For river, use CURVED lattice following the river path
+    print("\n2. Creating curved lattice following river...")
+    perp_extent = H / 3  # Extend 1/3 of image height perpendicular to river
+    n_lines = 128  # Number of scanlines perpendicular to river
+
+    lattice = Lattice2D.from_horizontal_curve(
+        y_fn=river_centerline,
+        x_range=(0, W),
+        n_lines=n_lines,
+        perp_extent=perp_extent,
+        device=device
+    )
     print(f"   Number of scanlines: {lattice.n_lines}")
+    print(f"   Perpendicular extent: ±{perp_extent:.1f} pixels from centerline")
+
+    # Define ROI and pair ranges for seam pairs
+    # ROI: the river itself (middle scanlines)
+    # Pair: background regions (top and bottom scanlines)
+    roi_start = int(n_lines * 0.4)  # Start at 40% of scanlines
+    roi_end = int(n_lines * 0.6)    # End at 60% (middle 20%)
+    pair_start = int(n_lines * 0.05)  # Top background
+    pair_end = int(n_lines * 0.25)
+
+    print(f"\n3. Seam pair regions (in lattice u-coordinates):")
+    print(f"   ROI (river): scanlines [{roi_start}, {roi_end}]")
+    print(f"   Pair (background): scanlines [{pair_start}, {pair_end}]")
 
     # Compute energy
-    print("\n3. Computing energy...")
+    print("\n4. Computing energy...")
     energy = gradient_magnitude_energy(image)
 
     # Resample energy to lattice space
-    print("4. Resampling energy to lattice space...")
-    lattice_width = W
+    print("5. Resampling energy to lattice space...")
+    lattice_width = 256  # Sample along each scanline
     energy_3d = energy.unsqueeze(0)
     lattice_energy = lattice.resample_to_lattice_space(energy_3d, lattice_width)
     lattice_energy = lattice_energy.squeeze(0)
     print(f"   Lattice energy shape: {lattice_energy.shape}")
 
-    # Find one seam
-    from src.seam import greedy_seam
-    print("\n5. Finding vertical seam...")
-    seam = greedy_seam(lattice_energy, direction='vertical')
-    print(f"   Seam shape: {seam.shape}")
+    # Find seams in windowed regions
+    print("\n6. Finding seam pairs...")
+    roi_seam = greedy_seam_windowed(lattice_energy, (roi_start, roi_end), direction='vertical')
+    pair_seam = greedy_seam_windowed(lattice_energy, (pair_start, pair_end), direction='vertical')
+    print(f"   ROI seam range: [{roi_seam.min().item():.0f}, {roi_seam.max().item():.0f}]")
+    print(f"   Pair seam range: [{pair_seam.min().item():.0f}, {pair_seam.max().item():.0f}]")
+
+    # Compute forward mapping for world pixels
+    print("\n7. Computing forward mapping for visualization...")
+    from src.carving import _precompute_forward_mapping
+    u_map, n_map = _precompute_forward_mapping(lattice, H, W, device)
 
     # Create visualizations
-    print("\n6. Creating visualizations...")
+    print("8. Creating visualizations...")
 
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
 
-    # Original image
+    # Row 1, Col 1: Original image
     axes[0, 0].imshow(image.cpu().numpy(), cmap='gray')
     axes[0, 0].set_title('Original River Image', fontsize=14, fontweight='bold')
     axes[0, 0].axis('off')
 
-    # Lattice overlay (just show it's rectangular)
+    # Row 1, Col 2: Lattice overlay
     img_with_lattice = visualize_lattice_on_image(image, lattice, n_samples=50)
     axes[0, 1].imshow(img_with_lattice.permute(1, 2, 0).cpu().numpy())
-    axes[0, 1].set_title('Rectangular Lattice\n(Red = horizontal scanlines)', fontsize=14, fontweight='bold')
+    axes[0, 1].set_title('Curved Lattice Structure\n(Red = scanlines perpendicular to river)', fontsize=12, fontweight='bold')
     axes[0, 1].axis('off')
 
-    # Energy map
-    axes[1, 0].imshow(energy.cpu().numpy(), cmap='hot')
-    axes[1, 0].set_title('Energy Map', fontsize=14, fontweight='bold')
-    axes[1, 0].axis('off')
+    # Row 1, Col 3: Energy map with seam pairs overlayed
+    print("   Creating world-space seam visualization...")
+    energy_with_seams = visualize_seams_on_world_energy(energy, lattice, roi_seam, pair_seam)
+    axes[0, 2].imshow(energy_with_seams.permute(1, 2, 0).cpu().numpy())
+    axes[0, 2].set_title('Energy + Seam Pairs (World Space)\nYellow=ROI (river), Green=Pair (background)', fontsize=12, fontweight='bold')
+    axes[0, 2].axis('off')
 
-    # Lattice energy with seam
+    # Row 2, Col 1: Lattice energy
+    axes[1, 0].imshow(lattice_energy.cpu().numpy(), cmap='hot')
+    axes[1, 0].set_title(f'Energy in Lattice Space\n({lattice_energy.shape[0]} scanlines × {lattice_energy.shape[1]} samples)', fontsize=12)
+    axes[1, 0].set_xlabel('u (along scanline)', fontsize=10)
+    axes[1, 0].set_ylabel('n (scanline index)', fontsize=10)
+
+    # Row 2, Col 2: Lattice energy with ROI seam
     axes[1, 1].imshow(lattice_energy.cpu().numpy(), cmap='hot')
-    scanline_indices = np.arange(len(seam))
-    axes[1, 1].plot(seam.cpu().numpy(), scanline_indices, 'cyan', linewidth=2, label='Greedy seam')
-    axes[1, 1].set_title('Lattice Energy + Seam', fontsize=14, fontweight='bold')
-    axes[1, 1].set_xlabel('u (column)', fontsize=10)
-    axes[1, 1].set_ylabel('n (row/scanline)', fontsize=10)
-    axes[1, 1].legend()
+    scanline_indices = np.arange(len(roi_seam))
+    axes[1, 1].plot(roi_seam.cpu().numpy(), scanline_indices, 'yellow', linewidth=2, label='ROI seam')
+    axes[1, 1].axhline(roi_start, color='yellow', linestyle='--', alpha=0.5, label='ROI window')
+    axes[1, 1].axhline(roi_end, color='yellow', linestyle='--', alpha=0.5)
+    axes[1, 1].set_title('Lattice Energy + ROI Seam\n(Yellow = remove from river)', fontsize=12)
+    axes[1, 1].set_xlabel('u (along scanline)', fontsize=10)
+    axes[1, 1].set_ylabel('n (scanline index)', fontsize=10)
+    axes[1, 1].legend(fontsize=8)
+
+    # Row 2, Col 3: Lattice energy with both seams
+    axes[1, 2].imshow(lattice_energy.cpu().numpy(), cmap='hot')
+    axes[1, 2].plot(roi_seam.cpu().numpy(), scanline_indices, 'yellow', linewidth=2, label='ROI seam (remove)')
+    axes[1, 2].plot(pair_seam.cpu().numpy(), scanline_indices, 'lime', linewidth=2, label='Pair seam (insert)')
+    axes[1, 2].axhline(roi_start, color='yellow', linestyle='--', alpha=0.3)
+    axes[1, 2].axhline(roi_end, color='yellow', linestyle='--', alpha=0.3)
+    axes[1, 2].axhline(pair_start, color='lime', linestyle='--', alpha=0.3)
+    axes[1, 2].axhline(pair_end, color='lime', linestyle='--', alpha=0.3)
+    axes[1, 2].set_title('Both Seam Pairs\n(Yellow=shrink river, Lime=expand background)', fontsize=12)
+    axes[1, 2].set_xlabel('u (along scanline)', fontsize=10)
+    axes[1, 2].set_ylabel('n (scanline index)', fontsize=10)
+    axes[1, 2].legend(fontsize=8)
 
     plt.tight_layout()
     plt.savefig('../output/debug_river_setup.png', dpi=150, bbox_inches='tight')
@@ -372,6 +503,167 @@ def debug_river():
     print("✓ Debug visualization complete!")
     print("="*70)
     print("\nCheck ../output/debug_river_setup.png")
+    print("\nThis shows:")
+    print("  - Original river image")
+    print("  - Curved lattice structure following river path")
+    print("  - Energy map with seam pairs overlayed (world space)")
+    print("  - Energy in lattice space with seam pairs marked")
+
+
+def debug_arch():
+    """Debug arch carving (Figure 3 from paper)."""
+    print("="*70)
+    print("DEBUGGING: Arch (Figure 3 from Paper)")
+    print("="*70)
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Device: {device}\n")
+
+    # Create arch
+    print("1. Creating arch image...")
+    image = create_arch(size=512, device=device)
+    H, W = image.shape
+    print(f"   Image size: {H}×{W}")
+
+    # Arch parameters (match create_arch)
+    center_x = W / 2
+    base_y = H * 0.75
+    radius = W * 0.35
+
+    # Arch centerline follows a semicircle
+    def arch_centerline(x):
+        """Arch centerline: semicircle centered at (center_x, base_y)"""
+        # For x in [center_x - radius, center_x + radius]
+        # y = base_y - sqrt(radius^2 - (x - center_x)^2)
+        dx = x - center_x
+        if abs(dx) > radius:
+            return base_y  # Outside arch
+        return base_y - np.sqrt(max(0, radius**2 - dx**2))
+
+    print("\n2. Creating curved lattice following arch...")
+    x_min = center_x - radius
+    x_max = center_x + radius
+    perp_extent = H / 4  # Extend perpendicular to arch
+    n_lines = 128
+
+    lattice = Lattice2D.from_horizontal_curve(
+        y_fn=arch_centerline,
+        x_range=(x_min, x_max),
+        n_lines=n_lines,
+        perp_extent=perp_extent,
+        device=device
+    )
+    print(f"   Number of scanlines: {lattice.n_lines}")
+    print(f"   Perpendicular extent: ±{perp_extent:.1f} pixels from arch")
+
+    # Compute energy
+    print("\n3. Computing energy...")
+    energy = gradient_magnitude_energy(image)
+
+    # Resample energy to lattice space
+    print("4. Resampling energy to lattice space...")
+    lattice_width = 256
+    energy_3d = energy.unsqueeze(0)
+    lattice_energy = lattice.resample_to_lattice_space(energy_3d, lattice_width)
+    lattice_energy = lattice_energy.squeeze(0)
+    print(f"   Lattice energy shape: {lattice_energy.shape}")
+
+    # Find one seam for traditional comparison
+    from src.seam import greedy_seam
+    print("\n5. Finding vertical seam in lattice space...")
+    seam = greedy_seam(lattice_energy, direction='vertical')
+    print(f"   Seam shape: {seam.shape}")
+    print(f"   Seam range: [{seam.min().item():.0f}, {seam.max().item():.0f}]")
+
+    # Compute forward mapping for visualization
+    print("\n6. Computing forward mapping for visualization...")
+    from src.carving import _precompute_forward_mapping
+    u_map, n_map = _precompute_forward_mapping(lattice, H, W, device)
+
+    # Create visualizations
+    print("7. Creating visualizations...")
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+
+    # Row 1, Col 1: Original image
+    axes[0, 0].imshow(image.cpu().numpy(), cmap='gray')
+    axes[0, 0].set_title('Original Arch (Figure 3)', fontsize=14, fontweight='bold')
+    axes[0, 0].axis('off')
+
+    # Row 1, Col 2: Lattice overlay
+    img_with_lattice = visualize_lattice_on_image(image, lattice, n_samples=40)
+    axes[0, 1].imshow(img_with_lattice.permute(1, 2, 0).cpu().numpy())
+    axes[0, 1].set_title('Curved Lattice Structure\n(Red = scanlines perpendicular to arch)', fontsize=12, fontweight='bold')
+    axes[0, 1].axis('off')
+
+    # Row 1, Col 3: Energy map
+    axes[0, 2].imshow(energy.cpu().numpy(), cmap='hot')
+    axes[0, 2].set_title('Energy Map (World Space)', fontsize=14, fontweight='bold')
+    axes[0, 2].axis('off')
+
+    # Row 2, Col 1: Lattice energy
+    axes[1, 0].imshow(lattice_energy.cpu().numpy(), cmap='hot')
+    axes[1, 0].set_title(f'Energy in Lattice Space\n({lattice_energy.shape[0]} scanlines × {lattice_energy.shape[1]} samples)', fontsize=12)
+    axes[1, 0].set_xlabel('u (along scanline)', fontsize=10)
+    axes[1, 0].set_ylabel('n (scanline index)', fontsize=10)
+
+    # Row 2, Col 2: Lattice energy with seam
+    axes[1, 1].imshow(lattice_energy.cpu().numpy(), cmap='hot')
+    scanline_indices = np.arange(len(seam))
+    axes[1, 1].plot(seam.cpu().numpy(), scanline_indices, 'cyan', linewidth=2, label='Vertical seam')
+    axes[1, 1].set_title('Lattice Energy + Seam\n(Vertical seam in lattice space)', fontsize=12)
+    axes[1, 1].set_xlabel('u (along scanline)', fontsize=10)
+    axes[1, 1].set_ylabel('n (scanline index)', fontsize=10)
+    axes[1, 1].legend(fontsize=8)
+
+    # Row 2, Col 3: Apply traditional and lattice-guided carving
+    print("   Running traditional carving for comparison...")
+    from src.carving import carve_image_traditional, carve_image_lattice_guided
+
+    traditional_carved = carve_image_traditional(image, n_seams=50, direction='vertical')
+    print(f"   Traditional carved: {traditional_carved.shape}")
+
+    print("   Running lattice-guided carving...")
+    lattice_carved = carve_image_lattice_guided(
+        image, lattice, n_seams=50, direction='vertical', lattice_width=lattice_width
+    )
+    print(f"   Lattice-guided carved: {lattice_carved.shape}")
+
+    # Show comparison
+    axes[1, 2].imshow(traditional_carved.cpu().numpy(), cmap='gray')
+    axes[1, 2].set_title(f'Traditional Carved (50 seams)\nArch distorted', fontsize=12)
+    axes[1, 2].axis('off')
+
+    plt.tight_layout()
+    plt.savefig('../output/debug_arch_setup.png', dpi=150, bbox_inches='tight')
+    print("   Saved: ../output/debug_arch_setup.png")
+
+    # Create a separate comparison figure showing all three
+    fig2, axes2 = plt.subplots(1, 3, figsize=(18, 6))
+
+    axes2[0].imshow(image.cpu().numpy(), cmap='gray')
+    axes2[0].set_title('Original Arch', fontsize=14, fontweight='bold')
+    axes2[0].axis('off')
+
+    axes2[1].imshow(traditional_carved.cpu().numpy(), cmap='gray')
+    axes2[1].set_title(f'Traditional Seam Carving\n({traditional_carved.shape[1]}×{traditional_carved.shape[0]})\nArch Distorted', fontsize=14)
+    axes2[1].axis('off')
+
+    axes2[2].imshow(lattice_carved.cpu().numpy(), cmap='gray')
+    axes2[2].set_title(f'Lattice-Guided Carving\n({lattice_carved.shape[1]}×{lattice_carved.shape[0]})\nArch Preserved(?)', fontsize=14)
+    axes2[2].axis('off')
+
+    plt.tight_layout()
+    plt.savefig('../output/arch_comparison.png', dpi=150, bbox_inches='tight')
+    print("   Saved: ../output/arch_comparison.png")
+
+    print("\n" + "="*70)
+    print("✓ Debug visualization complete!")
+    print("="*70)
+    print("\nCheck ../output/debug_arch_setup.png and arch_comparison.png")
+    print("\nCompare with Figure 3 from the paper:")
+    print("  - Traditional: arch should be squished horizontally")
+    print("  - Lattice-guided: arch should maintain its shape")
 
 
 def main():
@@ -379,24 +671,31 @@ def main():
 
     print("\nWhich test would you like to debug?")
     print("1. Bagel (seam pairs)")
-    print("2. River (rectangular lattice)")
+    print("2. River (curved lattice)")
+    print("3. Arch (Figure 3)")
 
-    choice = input("\nEnter choice (1 or 2): ").strip()
+    choice = input("\nEnter choice (1, 2, or 3): ").strip()
 
     if choice == '1':
         debug_bagel()
     elif choice == '2':
         debug_river()
+    elif choice == '3':
+        debug_arch()
     else:
-        print("Running both...")
+        print("Running all three...")
         debug_bagel()
         print("\n\n")
         debug_river()
+        print("\n\n")
+        debug_arch()
 
 
 if __name__ == '__main__':
-    # Just run both for now
+    # Just run all three
     create_output_dir()
     debug_bagel()
     print("\n\n")
     debug_river()
+    print("\n\n")
+    debug_arch()
