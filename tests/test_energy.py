@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import torch
 import pytest
-from src.energy import gradient_magnitude_energy
+from src.energy import gradient_magnitude_energy, normalize_energy, forward_energy
 
 
 class TestGradientMagnitudeEnergy:
@@ -52,3 +52,72 @@ class TestGradientMagnitudeEnergy:
         image = torch.rand(3, 30, 30)
         energy = gradient_magnitude_energy(image)
         assert (energy >= 0).all()
+
+
+class TestNormalizeEnergy:
+    def test_output_range(self):
+        """Normalized energy should be in [0, 1]."""
+        torch.manual_seed(42)
+        energy = torch.rand(20, 30) * 100 + 5  # arbitrary range
+        normed = normalize_energy(energy)
+        assert normed.min() >= -1e-6
+        assert normed.max() <= 1.0 + 1e-6
+
+    def test_min_is_zero_max_is_one(self):
+        """After normalization, min should be ~0 and max should be ~1."""
+        energy = torch.tensor([[1.0, 5.0], [3.0, 10.0]])
+        normed = normalize_energy(energy)
+        assert abs(normed.min().item()) < 1e-6
+        assert abs(normed.max().item() - 1.0) < 1e-6
+
+    def test_preserves_relative_ordering(self):
+        """Normalization is monotonic — relative ordering unchanged."""
+        energy = torch.tensor([[1.0, 5.0, 3.0], [7.0, 2.0, 9.0]])
+        normed = normalize_energy(energy)
+        # Flatten and check: if a > b in original, a > b in normalized
+        flat_e = energy.flatten()
+        flat_n = normed.flatten()
+        for i in range(len(flat_e)):
+            for j in range(len(flat_e)):
+                if flat_e[i] > flat_e[j]:
+                    assert flat_n[i] > flat_n[j]
+
+    def test_uniform_energy_produces_zeros(self):
+        """Uniform energy should normalize to all zeros (or near-zero)."""
+        energy = torch.ones(10, 10) * 5.0
+        normed = normalize_energy(energy)
+        assert normed.max() < 1e-6
+
+
+class TestForwardEnergy:
+    def test_uniform_image_low_energy(self):
+        """A uniform image should have very low forward energy everywhere."""
+        image = torch.ones(1, 20, 20) * 0.5
+        fe = forward_energy(image)
+        # Interior should be near zero (no edges to introduce)
+        assert fe[2:-2, 2:-2].max() < 1e-4
+
+    def test_vertical_edge_penalizes_crossing(self):
+        """Forward energy should be high where a seam would cross an edge."""
+        image = torch.zeros(1, 20, 20)
+        image[:, :, 10:] = 1.0
+        fe = forward_energy(image)
+        # Energy near the edge should be higher than far from it
+        edge_energy = fe[-1, 9:12].mean()  # bottom row near edge
+        bg_energy = fe[-1, 2:5].mean()     # bottom row away from edge
+        assert edge_energy > bg_energy
+
+    def test_output_shape(self):
+        """Forward energy should have same spatial dims as input."""
+        image = torch.rand(3, 30, 40)
+        fe = forward_energy(image)
+        assert fe.shape == (30, 40)
+
+    def test_cumulative_increases_downward(self):
+        """Forward energy is cumulative DP — values should generally increase
+        from top to bottom for non-trivial images."""
+        torch.manual_seed(42)
+        image = torch.rand(3, 20, 20)
+        fe = forward_energy(image)
+        # Average of last row should be >= average of first row
+        assert fe[-1].mean() >= fe[0].mean()

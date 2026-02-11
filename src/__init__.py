@@ -8,7 +8,7 @@ by Flynn et al., 2021.
 __version__ = "0.1.0"
 
 from .lattice import Lattice2D
-from .energy import gradient_magnitude_energy
+from .energy import gradient_magnitude_energy, normalize_energy, forward_energy
 from .seam import greedy_seam, greedy_seam_windowed, multi_greedy_seam, remove_seam
 from .carving import (
     carve_image_traditional,
@@ -20,6 +20,8 @@ from .carving import (
 __all__ = [
     'Lattice2D',
     'gradient_magnitude_energy',
+    'normalize_energy',
+    'forward_energy',
     'greedy_seam',
     'greedy_seam_windowed',
     'multi_greedy_seam',

@@ -64,13 +64,94 @@ def gradient_magnitude_energy(image: torch.Tensor) -> torch.Tensor:
     return energy
 
 
+def normalize_energy(energy: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Remap energy to [0, 1] range (paper page 10).
+
+    Paper: "we also remap our energy functions to always be between 0 and 1"
+
+    This is a monotonic transform so seam positions are unchanged.
+
+    Args:
+        energy: Energy map (H, W)
+        eps: Small value to avoid division by zero
+
+    Returns:
+        Normalized energy map in [0, 1]
+    """
+    e_min = energy.min()
+    e_max = energy.max()
+    return (energy - e_min) / (e_max - e_min + eps)
+
+
 def forward_energy(image: torch.Tensor) -> torch.Tensor:
-    """
-    Forward energy function that considers the cost of introducing edges.
+    """Forward energy (Rubinstein et al. 2008).
 
-    This is more sophisticated than gradient magnitude and can produce
-    better results by considering what happens after seam removal.
+    Considers the cost of new edges introduced by seam removal, rather
+    than just the energy of the pixel being removed. For each pixel,
+    computes three transition costs based on how removing it would
+    change its neighbors' relationships.
 
-    TODO: Implement forward energy from Rubinstein et al. 2008
+    For vertical seams, the three costs at pixel (i, j) are:
+      C_U = |I(i, j+1) - I(i, j-1)|
+      C_L = C_U + |I(i-1, j) - I(i, j-1)|
+      C_R = C_U + |I(i-1, j) - I(i, j+1)|
+
+    The minimum cost path is found via dynamic programming.
+
+    Args:
+        image: RGB image tensor (C, H, W) or grayscale (H, W)
+
+    Returns:
+        Forward energy map (H, W) — cumulative minimum cost at each pixel
     """
-    raise NotImplementedError("Forward energy not yet implemented")
+    if image.dim() == 2:
+        gray = image.clone()
+    elif image.dim() == 3:
+        if image.shape[0] == 3:
+            gray = 0.299 * image[0] + 0.587 * image[1] + 0.114 * image[2]
+        else:
+            gray = image.squeeze(0)
+
+    H, W = gray.shape
+
+    # Compute neighbor images via indexing (avoids F.pad dimension issues)
+    # I(i, j-1): shift right (left neighbor)
+    left = torch.zeros_like(gray)
+    left[:, 1:] = gray[:, :-1]
+    left[:, 0] = gray[:, 0]
+
+    # I(i, j+1): shift left (right neighbor)
+    right = torch.zeros_like(gray)
+    right[:, :-1] = gray[:, 1:]
+    right[:, -1] = gray[:, -1]
+
+    # I(i-1, j): shift down (above neighbor)
+    above = torch.zeros_like(gray)
+    above[1:, :] = gray[:-1, :]
+    above[0, :] = gray[0, :]
+
+    # Three transition costs (Rubinstein et al. 2008)
+    C_U = torch.abs(right - left)
+    C_L = C_U + torch.abs(above - left)
+    C_R = C_U + torch.abs(above - right)
+
+    # Dynamic programming: accumulate minimum cost top to bottom
+    M = torch.zeros_like(gray)
+    M[0] = C_U[0]
+
+    for i in range(1, H):
+        # Shifted versions of previous row's cumulative cost
+        M_prev = M[i - 1]
+        M_left = torch.full((W,), float('inf'), device=gray.device, dtype=gray.dtype)
+        M_left[1:] = M_prev[:-1]
+        M_right = torch.full((W,), float('inf'), device=gray.device, dtype=gray.dtype)
+        M_right[:-1] = M_prev[1:]
+
+        # Three options: come from above-left, above, or above-right
+        cost_from_left = M_left + C_L[i]
+        cost_from_center = M_prev + C_U[i]
+        cost_from_right = M_right + C_R[i]
+
+        M[i] = torch.min(torch.min(cost_from_left, cost_from_center), cost_from_right)
+
+    return M

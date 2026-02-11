@@ -524,3 +524,86 @@ class Lattice2D:
             world_image = world_image.squeeze(0)
 
         return world_image
+
+    def _check_overlapping_scanlines(self) -> bool:
+        """Check if any adjacent scanlines have overlapping perpendicular ranges.
+
+        Two adjacent scanlines overlap when the next scanline's origin projects
+        behind the current scanline (negative normal distance), meaning they
+        have crossed in world space. The normal for each scanline points toward
+        the next scanline, so (origins[i+1] - origins[i]) . normals[i] should
+        be positive for non-overlapping scanlines.
+
+        Returns:
+            True if overlapping scanlines are detected.
+        """
+        if self.n_lines < 2:
+            return False
+
+        for i in range(self.n_lines - 1):
+            # Vector from origin i to origin i+1
+            d = self.origins[i + 1] - self.origins[i]
+            # Project onto normal of scanline i.
+            # Should be positive (next origin is "ahead" of this scanline).
+            normal_dist = (d * self.normals[i]).sum()
+            if normal_dist < 0:
+                return True
+
+        return False
+
+    def smooth(self, max_iterations: int = 50) -> 'Lattice2D':
+        """Smooth the lattice to reduce overlapping scanlines (Section 3.4.2).
+
+        Applies an iterative mean filter on origins in the tangent (u) and
+        normal (v) directions, aligning each scanline with its neighbors.
+        Stops when no overlapping scanlines remain or max_iterations reached.
+
+        From the paper: "The user may then optionally smooth the points by
+        applying a mean filter in the u_n and v_n directions, thus aligning
+        points with their subsequent points."
+
+        Args:
+            max_iterations: Maximum smoothing iterations.
+
+        Returns:
+            Self (mutated in place) for chaining.
+        """
+        for iteration in range(max_iterations):
+            if not self._check_overlapping_scanlines():
+                break
+
+            # Mean filter: each interior origin moves toward the average of
+            # its neighbors (in world space)
+            new_origins = self.origins.clone()
+            for i in range(1, self.n_lines - 1):
+                new_origins[i] = (
+                    self.origins[i - 1] + self.origins[i] + self.origins[i + 1]
+                ) / 3.0
+            self.origins = new_origins
+
+            # Recompute tangents from smoothed origins.
+            # Scanline tangents are perpendicular to the curve tangent
+            # (the curve runs through origins sequentially).
+            new_tangents = self.tangents.clone()
+            for i in range(self.n_lines - 1):
+                diff = self.origins[i + 1] - self.origins[i]
+                norm = torch.sqrt((diff ** 2).sum())
+                if norm > 1e-8:
+                    curve_tangent = diff / norm
+                    # Scanline tangent = rotated curve tangent (perpendicular)
+                    new_tangents[i] = torch.stack([
+                        curve_tangent[1], -curve_tangent[0]
+                    ])
+            # Last scanline inherits from second-to-last
+            if self.n_lines > 1:
+                new_tangents[-1] = new_tangents[-2]
+
+            self.tangents = new_tangents
+
+            # Recompute normals from tangents
+            self.normals = torch.stack([
+                -self.tangents[:, 1],
+                self.tangents[:, 0]
+            ], dim=1)
+
+        return self

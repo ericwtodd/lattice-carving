@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from typing import Optional, Tuple
 from .lattice import Lattice2D
-from .energy import gradient_magnitude_energy
+from .energy import gradient_magnitude_energy, normalize_energy
 from .seam import greedy_seam, greedy_seam_windowed, remove_seam
 
 
@@ -26,8 +26,8 @@ def carve_image_traditional(image: torch.Tensor, n_seams: int,
     carved = image.clone()
 
     for i in range(n_seams):
-        # Compute energy
-        energy = gradient_magnitude_energy(carved)
+        # Compute energy and normalize to [0, 1] (paper page 10)
+        energy = normalize_energy(gradient_magnitude_energy(carved))
 
         # Find seam
         seam = greedy_seam(energy, direction=direction)
@@ -179,7 +179,8 @@ def _warp_and_resample(image: torch.Tensor, lattice: Lattice2D,
 
 def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
                                 n_seams: int, direction: str = 'vertical',
-                                lattice_width: Optional[int] = None) -> torch.Tensor:
+                                lattice_width: Optional[int] = None,
+                                roi_bounds: Optional[Tuple[float, float]] = None) -> torch.Tensor:
     """
     Lattice-guided seam carving using the "carving the mapping" approach.
 
@@ -198,6 +199,8 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
         n_seams: Number of seams to remove
         direction: 'vertical' or 'horizontal'
         lattice_width: Width of lattice space (if None, uses image width)
+        roi_bounds: Optional (u_min, u_max) — only warp pixels whose u-coordinate
+            falls within these bounds. Pixels outside stay unchanged.
 
     Returns:
         Carved image in world space (same shape as input)
@@ -237,6 +240,9 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
         if lattice_energy.dim() == 3:
             lattice_energy = lattice_energy.squeeze(0)
 
+        # Step 2b: Normalize energy to [0, 1] (paper page 10)
+        lattice_energy = normalize_energy(lattice_energy)
+
         # Step 3: Find seam in lattice space
         seam = greedy_seam(lattice_energy, direction=direction)
 
@@ -253,6 +259,15 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
 
     # Step 6: Final warp - sample from ORIGINAL image using cumulative shift
     current = _warp_and_resample(original_image, lattice, u_map, n_map, cumulative_shift)
+
+    # Step 7: ROI masking — pixels outside lattice bounds stay unchanged
+    if roi_bounds is not None:
+        u_min, u_max = roi_bounds
+        valid = (u_map >= u_min) & (u_map <= u_max)
+        # Also require n_map to be within valid scanline range
+        valid = valid & (n_map >= 0) & (n_map <= lattice.n_lines - 1)
+        valid = valid.unsqueeze(0).expand_as(current)  # (C, H, W)
+        current = torch.where(valid, current, original_image)
 
     if squeeze_output:
         current = current.squeeze(0)
@@ -323,6 +338,9 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
         lattice_energy = lattice.resample_to_lattice_space(energy_3d, lattice_width)
         if lattice_energy.dim() == 3:
             lattice_energy = lattice_energy.squeeze(0)
+
+        # Step 2b: Normalize energy to [0, 1] (paper page 10)
+        lattice_energy = normalize_energy(lattice_energy)
 
         # Step 3: Find seams in windowed regions
         roi_seam = greedy_seam_windowed(lattice_energy, roi_range, direction=direction)
