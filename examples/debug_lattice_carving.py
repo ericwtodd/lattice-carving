@@ -123,6 +123,47 @@ def visualize_lattice_on_image(image, lattice, n_samples=20):
     return img_rgb
 
 
+def visualize_seams_on_world_energy(energy, u_map, roi_seam, pair_seam, n_map):
+    """
+    Overlay seam positions onto world-space energy map (VECTORIZED).
+
+    Args:
+        energy: (H, W) energy map
+        u_map: (H, W) precomputed u-coordinates for each pixel
+        roi_seam: (n_lines,) seam positions in lattice space
+        pair_seam: (n_lines,) seam positions in lattice space
+        n_map: (H, W) precomputed n-coordinates for each pixel
+    """
+    H, W = energy.shape
+    device = energy.device
+
+    # Create RGB version of energy map
+    energy_norm = (energy - energy.min()) / (energy.max() - energy.min() + 1e-8)
+    energy_rgb = torch.stack([energy_norm, energy_norm, energy_norm], dim=0)
+
+    # Interpolate the seam positions at each pixel's n coordinate
+    from src.carving import _interpolate_seam
+    roi_seam_interp = _interpolate_seam(roi_seam, n_map)  # (H, W)
+    pair_seam_interp = _interpolate_seam(pair_seam, n_map)  # (H, W)
+
+    # Find pixels near each seam (vectorized)
+    threshold = 3.0
+
+    # ROI seam (yellow)
+    roi_mask = torch.abs(u_map - roi_seam_interp) < threshold
+    energy_rgb[0, roi_mask] = 1.0  # Red
+    energy_rgb[1, roi_mask] = 1.0  # Green (Red + Green = Yellow)
+    energy_rgb[2, roi_mask] = 0.0  # Blue
+
+    # Pair seam (green)
+    pair_mask = torch.abs(u_map - pair_seam_interp) < threshold
+    energy_rgb[0, pair_mask] = 0.0  # Red
+    energy_rgb[1, pair_mask] = 1.0  # Green
+    energy_rgb[2, pair_mask] = 0.0  # Blue
+
+    return energy_rgb
+
+
 def debug_bagel():
     """Debug bagel seam pairs step-by-step."""
     print("="*70)
@@ -180,8 +221,13 @@ def debug_bagel():
     print(f"   ROI seam range: [{roi_seam.min().item():.0f}, {roi_seam.max().item():.0f}]")
     print(f"   Pair seam range: [{pair_seam.min().item():.0f}, {pair_seam.max().item():.0f}]")
 
+    # Compute forward mapping for world pixels
+    print("\n7. Computing forward mapping for visualization...")
+    from src.carving import _precompute_forward_mapping
+    u_map, n_map = _precompute_forward_mapping(lattice, H, W, device)
+
     # Create visualizations
-    print("\n7. Creating visualizations...")
+    print("8. Creating visualizations...")
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
 
@@ -196,9 +242,11 @@ def debug_bagel():
     axes[0, 1].set_title('Circular Lattice Structure\n(Red lines = scanlines)', fontsize=14, fontweight='bold')
     axes[0, 1].axis('off')
 
-    # Row 1, Col 3: Energy map
-    axes[0, 2].imshow(energy.cpu().numpy(), cmap='hot')
-    axes[0, 2].set_title('Energy Map (World Space)', fontsize=14, fontweight='bold')
+    # Row 1, Col 3: Energy map with seam pairs overlayed
+    print("   Creating world-space seam visualization...")
+    energy_with_seams = visualize_seams_on_world_energy(energy, u_map, roi_seam, pair_seam, n_map)
+    axes[0, 2].imshow(energy_with_seams.permute(1, 2, 0).cpu().numpy())
+    axes[0, 2].set_title('Energy + Seam Pairs (World Space)\nYellow=ROI (shrink), Green=Pair (expand)', fontsize=12, fontweight='bold')
     axes[0, 2].axis('off')
 
     # Row 2, Col 1: Lattice energy

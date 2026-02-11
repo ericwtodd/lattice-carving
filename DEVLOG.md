@@ -216,3 +216,44 @@ check shapes and basic properties, not whether the carving produces good results
 
 **Current priority:** Get visualization working first, then write meaningful tests
 based on what we learn.
+
+### Curved Lattice Implementation
+
+**User insight:** The lattice structure needs to follow the region of interest (ROI),
+not span the entire image. For a river, scanlines should follow the river's curve.
+For a bagel, the lattice should cover the annular region.
+
+**Implementation:**
+- Added `Lattice2D.from_horizontal_curve()` for features like rivers
+  - Takes a function y = f(x) defining the centerline
+  - Creates scanlines perpendicular to the curve at regular x intervals
+  - Each scanline origin is on the centerline, tangent is perpendicular to curve
+- Fixed visualization performance issue (was using nested Python loops, now vectorized)
+- Created LATTICE_STRUCTURE_EXPLAINED.md documenting the confusion and correct approach
+
+**Key realizations:**
+1. **Current radial lattice for bagel might be correct!**
+   - Radial scanlines: n = angle, u = radius
+   - Vertical seam (constant u, varying n) = circle at radius u
+   - This is what we want for removing concentric circles
+
+2. **River needs curved lattice:**
+   - Rectangular lattice with horizontal scanlines doesn't follow river shape
+   - Need scanlines that follow the river's curve
+   - Implemented `from_horizontal_curve()` for this
+
+3. **Lattice should cover ROI only:**
+   - Not the entire image
+   - Outside the lattice region, pixels are unchanged
+   - Need to add ROI masking/bounds (TODO)
+
+**Test cases planned:**
+1. Bagel - seam pairs (shrink hole, expand background)
+2. River - curved lattice following sinusoidal path
+3. Arch (Figure 3 from paper) - after bagel/river work
+
+**Next steps:**
+1. Run debug visualization to see actual seam positions
+2. Identify what's broken (lattice structure? interpolation? warping?)
+3. Fix the core issue
+4. Validate with all three test cases

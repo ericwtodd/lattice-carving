@@ -80,6 +80,62 @@ class Lattice2D:
         return cls(origins, tangents, spacing)
 
     @classmethod
+    def from_horizontal_curve(cls, y_fn, x_range: Tuple[float, float],
+                              n_lines: int, perp_extent: float, device='cpu'):
+        """
+        Create a lattice following a horizontally-flowing curved feature (like a river).
+
+        The curve is defined by y = y_fn(x), and scanlines run perpendicular to
+        the curve (roughly vertical). This creates a coordinate system where:
+        - u ≈ x (position along the horizontal direction)
+        - n = perpendicular distance from the curve
+
+        Args:
+            y_fn: Function x -> y defining the centerline curve
+            x_range: (x_min, x_max) horizontal extent
+            n_lines: Number of parallel scanlines (perpendicular spacing)
+            perp_extent: Distance to extend perpendicular to curve (both sides)
+            device: torch device
+
+        Returns:
+            Lattice with scanlines perpendicular to the curve
+        """
+        x_min, x_max = x_range
+
+        # Create vertical scanlines at regular x positions
+        # Each scanline is perpendicular to the local curve direction
+        x_positions = torch.linspace(x_min, x_max, n_lines, device=device)
+
+        origins = torch.zeros(n_lines, 2, device=device)
+        tangents = torch.zeros(n_lines, 2, device=device)
+        spacing = torch.ones(n_lines, device=device) * ((x_max - x_min) / n_lines)
+
+        # For each x position, compute the curve y and the perpendicular direction
+        for i, x in enumerate(x_positions):
+            y = y_fn(x.item())
+
+            # Compute derivative numerically for tangent direction
+            dx = 0.1
+            y_left = y_fn(max(x.item() - dx, x_min))
+            y_right = y_fn(min(x.item() + dx, x_max))
+            dy_dx = (y_right - y_left) / (2 * dx)
+
+            # Tangent to curve: (1, dy/dx)
+            curve_tangent = torch.tensor([1.0, dy_dx], device=device)
+            curve_tangent = curve_tangent / torch.sqrt((curve_tangent ** 2).sum())
+
+            # Normal (perpendicular): rotate tangent by 90 degrees
+            normal = torch.tensor([-curve_tangent[1], curve_tangent[0]], device=device)
+
+            # Origin is on the centerline
+            origins[i] = torch.tensor([x, y], device=device)
+
+            # Tangent for scanline points perpendicular to curve (along normal)
+            tangents[i] = normal
+
+        return cls(origins, tangents, spacing)
+
+    @classmethod
     def circular(cls, center: Tuple[float, float], radius: float,
                  n_lines: int, device='cpu'):
         """

@@ -6,7 +6,7 @@ Research/implementation project for generalized lattice-guided seam carving,
 based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
 (Flynn et al., 2021). The paper PDF is at `generalized-fluid-carving.pdf`.
 
-## Current State (as of 2026-02-10)
+## Current State (as of 2026-02-11)
 
 **What works (30 tests passing):**
 - `Lattice2D` class with rectangular and circular constructors
@@ -18,25 +18,31 @@ based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
 - End-to-end traditional carving (`carve_image_traditional`)
 - End-to-end lattice-guided carving (`carve_image_lattice_guided`) — but see caveat below
 
-**Known issue — naive double interpolation:**
-The current `carve_image_lattice_guided` uses the naive approach: resample pixels
-V→L, carve seams in L, resample L→V. This causes blurring from two rounds of
-bilinear interpolation. The paper warns against this explicitly (Section 3.3, Fig. 6).
+**Known issues:**
+1. ✅ FIXED: Cumulative shift bug - was computing shifts against original u_map instead
+   of accounting for previous shifts. Now tracks cumulative_shift correctly.
+2. ⚠️ DEBUGGING: Lattice-guided carving still produces distorted output despite bug fix
+   - Visualization framework created to debug step-by-step
+   - Need to verify: lattice structure, energy resampling, seam interpolation, warping
+3. ⚠️ Tests don't validate correctness - they only check shapes/types, pass even when
+   output is severely distorted
 
-**What's not implemented yet (priority order):**
-1. **"Carving the mapping" (Section 3.3)** — The paper's actual method. Instead of
-   resampling pixel data twice, you: (a) map energy V→L, (b) find seam in L,
-   (c) seam removal modifies the lattice mapping itself to produce g*, (d) final
-   image pixels come from a single lookup: V*(p) = V_copy(g*(f(p))). This is the
-   critical next step.
-2. **Seam pairs (Section 3.6)** — Resize a local region without changing global
-   boundaries. Two windows: region of interest shrinks, pair region expands
-   (or vice versa). This is how you'd shrink a bagel hole while expanding background.
-3. **Cyclic lattices (Section 3.5)** — For closed shapes (rings, tubes). Connect last
-   lattice plane back to first. Cyclic greedy uses inverted Gaussian energy guide to
-   steer seam back to start (Section 4.0.1, Fig. 12).
-4. **Forward energy (Rubinstein et al. 2008)** — Better energy function that considers
-   cost of introducing new edges after seam removal. Stub exists in `energy.py`.
+**What's implemented but needs debugging:**
+1. ✅ **"Carving the mapping" (Section 3.3)** — Implemented in `carve_image_lattice_guided()`
+   - Maps energy V→L, finds seam in L, shifts u-coordinates, single pixel resample
+   - Has cumulative shift bug fix, but still produces distorted output
+2. ✅ **Seam pairs (Section 3.6)** — Implemented in `carve_seam_pairs()`
+   - Two windowed regions: ROI (shrink) and pair (expand)
+   - Same cumulative shift issue, needs debugging
+3. ✅ **Curved lattice support** — Added `Lattice2D.from_horizontal_curve()`
+   - For rivers, roads, or features following a curve
+   - Creates scanlines perpendicular to centerline curve
+
+**What's not implemented yet:**
+1. **ROI-bounded lattices** — Lattice should cover region of interest only, not entire image
+2. **Cyclic lattices (Section 3.5)** — For closed shapes (rings, tubes)
+3. **Forward energy (Rubinstein et al. 2008)** — Stub exists in `energy.py`
+4. **Concentric circle lattice** — May or may not be needed (radial lattice might work)
 
 ## Coding Preferences
 
