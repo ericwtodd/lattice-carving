@@ -15,7 +15,11 @@ Tracking implementation of "Generalized Fluid Carving with Fast Lattice-Guided S
 - [x] Forward mapping: world V → lattice L (vectorized)
 - [x] Inverse mapping: lattice L → world V (vectorized)
 - [x] **Symmetric scanline coverage (u_offset in both directions)**
-- [ ] Lattice smoothing (optional, mentioned in Figure 9)
+- [ ] **Lattice smoothing (Section 3.4.2, Figure 9)** — HIGH PRIORITY
+  - Apply mean filter in u/v directions to align scanlines
+  - Iterate until no overlapping planes or max iterations
+  - Prevents overlapping lattices and artifacts
+  - Paper says: "alleviates the burden on the user to avoid overlapping lattices"
 
 #### ✅ Energy Functions (Section 3.2)
 - [x] Gradient magnitude energy (Sobel filters)
@@ -27,7 +31,12 @@ Tracking implementation of "Generalized Fluid Carving with Fast Lattice-Guided S
 - [x] Multi-greedy seam (multiple starting points)
 - [x] Windowed greedy seam (for seam pairs)
 - [ ] Graph-cut optimal seam (slow, mentioned but not needed)
-- [ ] Cyclic greedy with Gaussian guide (Section 4.0.1) - for closed curves
+- [ ] **Cyclic greedy with Gaussian guide (Section 4.0.1, Figure 12)** — MEDIUM PRIORITY
+  - Add inverted multidimensional Gaussian to energy function
+  - Gaussian centered on initial seam position
+  - Steers seam back to starting point for cyclic lattices
+  - Ensures seam starts and ends at same location
+  - Paper: "guarantees the seam in the final 2D slice is reachable by the seam in the initial 2D slice"
 
 #### ✅ Carving the Mapping (Section 3.3) - CRITICAL
 - [x] Resample energy to lattice space (NOT pixel data)
@@ -163,13 +172,19 @@ Tracking implementation of "Generalized Fluid Carving with Fast Lattice-Guided S
 
 ## Next Steps (Priority Order)
 
-1. **Validate seam visualization** (Phase 2 - CURRENT)
-   - Run updated `test_lattice_visualization.py`
-   - Check that seams are in correct regions (ROI vs pair)
-   - Verify window boundaries make sense
-   - Ensure cyclic seams wrap properly for bagel
+1. **Lattice-space visualization** (NEW - CURRENT)
+   - Created `visualize_lattice_space.py` to show image/energy/seam in (u,n) space
+   - Similar to Figure 12 from paper
+   - Helps validate resampling and seam computation
+   - Check for overlapping lattices
 
-2. **Apply actual carving** (Phase 3 start)
+2. **Implement lattice smoothing** (HIGH PRIORITY if overlaps detected)
+   - Section 3.4.2, Figure 9 from paper
+   - Apply iterative mean filter to align scanlines
+   - Prevents overlapping planes in lattice
+   - Required for faithful reproduction of paper's approach
+
+3. **Apply actual carving** (Phase 3 start)
    - Use `carve_seam_pairs()` function
    - Apply to arch (grow), river (shrink), bagel (grow)
    - Show before/after comparisons

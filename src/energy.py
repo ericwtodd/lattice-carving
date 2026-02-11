@@ -13,9 +13,12 @@ import torch.nn.functional as F
 
 def gradient_magnitude_energy(image: torch.Tensor) -> torch.Tensor:
     """
-    Compute gradient magnitude energy for an image.
+    Compute gradient magnitude energy for an image (paper equation 6).
 
+    Uses L1 norm of image gradients:
     E_I(i,j) = ||∂/∂x I(i,j)|| + ||∂/∂y I(i,j)||
+
+    This is the standard energy function from Avidan & Shamir 2007.
 
     Args:
         image: RGB image tensor (C, H, W) or grayscale (H, W)
@@ -53,8 +56,10 @@ def gradient_magnitude_energy(image: torch.Tensor) -> torch.Tensor:
     grad_x = F.conv2d(gray, sobel_x, padding=1)
     grad_y = F.conv2d(gray, sobel_y, padding=1)
 
-    # Gradient magnitude
-    energy = torch.sqrt(grad_x ** 2 + grad_y ** 2).squeeze()
+    # Gradient magnitude using L1 norm (paper equation 6)
+    # E_I(i,j) = ||∂/∂x I|| + ||∂/∂y I||
+    energy = torch.abs(grad_x) + torch.abs(grad_y)
+    energy = energy.squeeze()
 
     return energy
 

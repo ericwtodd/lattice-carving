@@ -1,5 +1,77 @@
 # Development Log
 
+## 2026-02-11 - Lattice-Space Visualization & Energy Function Fix
+
+### Created Lattice-Space Visualization (Figure 12)
+
+**Goal**: Visualize images in lattice index space (u,n coordinates) to validate resampling and check for lattice overlaps.
+
+**Created scripts**:
+- `create_test_images.py` - Generates reusable test images (bagel, arch, river)
+  - Bagel: Uses sesame seed code from test_lattice_visualization.py
+  - Arch: Semicircular arch using distance-based generation
+  - River: Sine wave from test_lattice_visualization.py
+- `show_lattice_space.py` - Visualizes test images in lattice space
+  - Shows 4 panels: Image, Energy, ROI seam, Pair seam
+  - All in (u,n) coordinates like Figure 12 from paper
+
+**Purpose**:
+- Validate that resampling works correctly (features should appear straight/regular in lattice space)
+- Check for overlapping lattices (would show as distortions)
+- Verify energy computation makes sense in lattice space
+- Debug seam computation visually
+
+### Fixed Energy Function (Paper Equation 6)
+
+**Problem**: Used L2 norm (Euclidean) instead of L1 norm (Manhattan) for gradient magnitude.
+
+**Our old implementation**:
+```python
+energy = torch.sqrt(grad_x ** 2 + grad_y ** 2)  # L2 norm
+```
+
+**Paper equation 6**:
+```
+E_I(i,j) = ||∂/∂x I|| + ||∂/∂y I||  # L1 norm
+```
+
+**Fix**:
+```python
+energy = torch.abs(grad_x) + torch.abs(grad_y)  # L1 norm ✓
+```
+
+**Impact**:
+- Now matches Avidan & Shamir 2007 exactly
+- Faster (no sqrt operation)
+- Should give seam paths matching paper's results
+
+### Fixed Import Issues
+
+**Problem**: Relative imports in `src/` files broke when running scripts.
+
+**Solution**: Standardized all example scripts to:
+1. Add `src/` to `sys.path`
+2. Import modules without `src.` prefix
+3. All `src/` modules use absolute imports (no relative imports)
+
+**Files fixed**:
+- `src/carving.py` - Changed from relative to absolute imports
+- `examples/test_lattice_visualization.py` - Fixed import path
+- `examples/show_lattice_space.py` - Uses correct import pattern
+
+### Updated Documentation
+
+**Added to IMPLEMENTATION_STATUS.md**:
+- Lattice smoothing (HIGH PRIORITY) - Section 3.4.2, Figure 9
+- Gaussian energy guide for cyclic seams (MEDIUM PRIORITY) - Section 4.0.1, Figure 12
+- Both marked as important for faithful paper reproduction
+
+**Next Steps**:
+1. Run lattice-space visualization to check for overlaps
+2. Implement lattice smoothing if overlaps detected
+3. Implement Gaussian energy guide for cyclic seams
+4. Apply actual carving with seam pairs
+
 ## 2026-02-11 - Seam Pairs Understanding & Visualization
 
 ### Deep Dive into Section 3.6 (Seam Pairs)

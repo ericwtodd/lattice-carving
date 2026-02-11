@@ -16,14 +16,17 @@ Shows:
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from pathlib import Path
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
-from src.lattice import Lattice2D
-from src.energy import gradient_magnitude_energy
+from lattice import Lattice2D
+from energy import gradient_magnitude_energy
 
 
 def create_test_image_from_curve(curve_points, height, width, band_width=60, device='cpu'):
@@ -450,7 +453,7 @@ def test_sine_wave():
     print(f"   Pair range (background): {pair_range}")
 
     # Find seam pairs in lattice space
-    from src.seam import greedy_seam_windowed
+    from seam import greedy_seam_windowed
     roi_seam = greedy_seam_windowed(lattice_energy, roi_range, direction='vertical')
     pair_seam = greedy_seam_windowed(lattice_energy, pair_range, direction='vertical')
 
@@ -515,7 +518,7 @@ def test_arch():
     print(f"   Pair range (background): {pair_range}")
 
     # Find seam pairs in lattice space
-    from src.seam import greedy_seam_windowed
+    from seam import greedy_seam_windowed
     roi_seam = greedy_seam_windowed(lattice_energy, roi_range, direction='vertical')
     pair_seam = greedy_seam_windowed(lattice_energy, pair_range, direction='vertical')
 
@@ -576,7 +579,7 @@ def test_river():
     print(f"   Pair range (background): {pair_range}")
 
     # Find seam pairs in lattice space
-    from src.seam import greedy_seam_windowed
+    from seam import greedy_seam_windowed
     roi_seam = greedy_seam_windowed(lattice_energy, roi_range, direction='vertical')
     pair_seam = greedy_seam_windowed(lattice_energy, pair_range, direction='vertical')
 
@@ -665,7 +668,7 @@ def test_bagel():
     # NOTE: For cyclic lattices, paper uses inverted Gaussian guide on energy to ensure
     # seam starts and ends at same location (Section 4.0.1, Cyclic Greedy Seams).
     # With sesame seed texture, seams should be more interesting than just circles.
-    from src.seam import greedy_seam_windowed
+    from seam import greedy_seam_windowed
     roi_seam = greedy_seam_windowed(lattice_energy, roi_range, direction='vertical')
     pair_seam = greedy_seam_windowed(lattice_energy, pair_range, direction='vertical')
 
