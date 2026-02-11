@@ -83,7 +83,13 @@ def visualize_lattice(curve_points, lattice, title="Lattice Construction"):
     ax = axes[1]
 
     # Draw grid by sampling lattice space and mapping to world space
-    lattice_width = 50  # Sample points along each scanline
+    # lattice_width should be 2*perp_extent (full extent of scanlines)
+    if hasattr(lattice, '_perp_extent'):
+        lattice_width = int(2 * lattice._perp_extent)
+    else:
+        lattice_width = 50  # Fallback
+
+    print(f"   Visualizing with lattice_width={lattice_width} (should be 2*perp_extent)")
 
     # Draw scanlines (constant n, varying u)
     for n_idx in range(0, n_lines, max(1, n_lines // 10)):  # Sample every 10th
