@@ -145,8 +145,9 @@ class Lattice2D:
         tangent_norms = torch.sqrt((tangents ** 2).sum(dim=1, keepdim=True))
         tangents = tangents / (tangent_norms + 1e-8)
 
-        # Compute normals (perpendicular, pointing "left" of curve)
-        normals = torch.stack([-tangents[:, 1], tangents[:, 0]], dim=1)
+        # Compute normals (perpendicular to curve)
+        # For clockwise curves (like our bagel), flip to point outward
+        normals = torch.stack([tangents[:, 1], -tangents[:, 0]], dim=1)
 
         # Sample n_lines points along the curve
         if n_lines > N:

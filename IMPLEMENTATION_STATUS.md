@@ -110,14 +110,15 @@ Tracking implementation of "Generalized Fluid Carving with Fast Lattice-Guided S
 - [x] Cyclic lattice support for closed curves
 - [x] Proper visualization of cyclic wrap-around
 
-### ⏳ Phase 2: Seam Visualization (CURRENT)
+### ✅ Phase 2: Seam Visualization (COMPLETE)
 - [x] Visualize seams in lattice space (via windows)
 - [x] Visualize seams in world space (mapped back via inverse_mapping)
 - [x] Visualize seam pairs with ROI and pair regions marked
 - [x] Window boundaries shown in visualization (yellow/orange dashed lines)
 - [x] Cyclic seam visualization (wraps around for bagel)
-- [ ] Validate seams make sense (currently testing)
-- **Status**: Can see seams and windows, validating placement
+- [x] Validate seams make sense (VALIDATED - all working correctly)
+- [x] Fixed critical normal direction bug for clockwise curves
+- **Status**: All visualizations working correctly, ready for carving!
 
 ### ⏳ Phase 3: Actual Carving
 - [ ] Apply carving with seam pairs
@@ -148,11 +149,15 @@ Tracking implementation of "Generalized Fluid Carving with Fast Lattice-Guided S
    - Fix: Keep origins on centerline, use u_offset for centering
 5. ✅ **Uneven scanline spacing** - Parameter-based sampling
    - Fix: Arc length resampling
+6. ✅ **Normal direction for clockwise curves** - Normals pointed inward, causing backwards coordinate system
+   - Fix: Changed normal computation from `[-tangents[:, 1], tangents[:, 0]]` to `[tangents[:, 1], -tangents[:, 0]]`
+   - Impact: Positive u now correctly extends outward from centerline
 
 ### Current Status
 - **Lattice construction: SOLID** ✓
 - **Carving algorithms: FIXED, NEEDS TESTING** ⚠️
-- **Visualization: IN PROGRESS** ⏳
+- **Visualization: COMPLETE** ✅
+- **Ready for Phase 3: Actual carving with seam pairs**
 
 ---
 

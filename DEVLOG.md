@@ -63,10 +63,47 @@
 - Pair window: (160, 200) - background to one side
 
 **Bagel** (grow bagel outward):
-- perp_extent: 50 (lattice_width=100)
-- Bagel: inner_radius=50, outer_radius=110, centerline=80
-- ROI window: (65, 80) - outer part of bagel (radius 95-110)
-- Pair window: (85, 95) - background beyond bagel (radius 115-125)
+- perp_extent: 80 (lattice_width=160)
+- Bagel: inner_radius=100, outer_radius=200, centerline=150
+- ROI window: (30, 130) - full bagel donut (radius 100-200)
+- Pair window: (140, 160) - background beyond bagel (radius 210-230)
+
+### Critical Bug Fix: Normal Direction for Clockwise Curves
+
+**Problem**: Orange boundary lines (Pair window) appeared inside the bagel hole instead of outside in the background.
+
+**Debugging Process**:
+- Added debug output to trace u-coordinate → world-space mappings
+- Found that u=140 mapped to radius 90.5 (should be ~210)
+- Found that u=30 mapped to radius 200 (should be ~100)
+- **Root cause**: Coordinate system was backwards - positive u went inward, negative u went outward
+
+**Analysis**:
+For a clockwise circle, the "left" perpendicular to the tangent points INWARD toward the center.
+Our original normal computation was:
+```python
+normals = torch.stack([-tangents[:, 1], tangents[:, 0]], dim=1)
+```
+
+This created normals pointing inward for clockwise curves. When we added `u_offset * normal` to the origin, positive u values moved toward the center instead of away from it.
+
+**Fix** in `src/lattice.py`, `from_curve_points()`:
+```python
+# Changed from (WRONG):
+normals = torch.stack([-tangents[:, 1], tangents[:, 0]], dim=1)
+
+# To (CORRECT):
+normals = torch.stack([tangents[:, 1], -tangents[:, 0]], dim=1)
+```
+
+This flips the normals to point outward, making positive u values extend away from the centerline as expected.
+
+**Verification**:
+- After fix: u=140 → radius 209.8 ✓
+- After fix: u=30 → radius 100 ✓
+- Orange boundaries now correctly positioned outside bagel in background
+- Yellow boundaries still correctly frame the bagel donut
+- All cyclic visualizations close properly
 
 ### Improved Visualization
 

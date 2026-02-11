@@ -27,7 +27,7 @@ from src.energy import gradient_magnitude_energy
 
 
 def create_test_image_from_curve(curve_points, height, width, band_width=60, device='cpu'):
-    """Create a test image with a bright band following the curve.
+    """Create a test image with a bright band following the curve, with texture.
 
     Args:
         curve_points: Centerline points defining the feature
@@ -60,11 +60,16 @@ def create_test_image_from_curve(curve_points, height, width, band_width=60, dev
                        torch.ones_like(min_dist_torch) * 0.8,  # Bright band
                        torch.ones_like(min_dist_torch) * 0.2)  # Dark background
 
+    # Add texture (small noise variation)
+    torch.manual_seed(42)
+    noise = (torch.rand(height, width, dtype=torch.float32, device=device) - 0.5) * 0.15
+    image = torch.clamp(image + noise, 0, 1)
+
     return image
 
 
 def create_bagel_image(center, inner_radius, outer_radius, height, width, device='cpu'):
-    """Create a bagel/donut image with a hole.
+    """Create a bagel/donut image with a hole and sesame seed texture.
 
     Args:
         center: (cx, cy) center of bagel
@@ -83,10 +88,27 @@ def create_bagel_image(center, inner_radius, outer_radius, height, width, device
     cx, cy = float(center[0]), float(center[1])
     dist = torch.sqrt((xx - cx)**2 + (yy - cy)**2)
 
-    # Bright ring between inner and outer radius
+    # Base bagel ring
     image = torch.where((dist >= inner_radius) & (dist <= outer_radius),
                        torch.tensor(0.8, dtype=torch.float32, device=device),  # Bagel
                        torch.tensor(0.2, dtype=torch.float32, device=device))  # Background + hole
+
+    # Add sesame seed texture (small bright ovals)
+    torch.manual_seed(42)  # Reproducible seeds
+    n_seeds = 100
+    for _ in range(n_seeds):
+        # Random position along bagel (ensure tensors are on correct device)
+        angle = torch.rand(1, device=device) * 2 * np.pi
+        radius = inner_radius + torch.rand(1, device=device) * (outer_radius - inner_radius)
+        seed_x = cx + radius * torch.cos(angle)
+        seed_y = cy + radius * torch.sin(angle)
+
+        # Small oval shape (rotated to follow bagel curve)
+        seed_dist = torch.sqrt((xx - seed_x)**2 + (yy - seed_y)**2)
+        seed_mask = seed_dist < 3.0  # Small seeds
+        image = torch.where(seed_mask,
+                          torch.tensor(0.95, dtype=torch.float32, device=device),  # Bright seed
+                          image)
 
     return image
 
@@ -113,10 +135,19 @@ def visualize_seams(image, curve_points, lattice, seam, seam2=None,
     device = image.device
     H, W = image.shape
 
+    # Check if lattice is cyclic
+    is_cyclic = hasattr(lattice, '_cyclic') and lattice._cyclic
+
     # Panel 1: Original image with centerline
     ax = axes[0]
     ax.imshow(image_np, cmap='gray', aspect='auto', vmin=0, vmax=1)
-    ax.plot(curve_np[:, 0], curve_np[:, 1], 'r-', linewidth=2, label='Centerline')
+
+    # For cyclic curves, close the loop by connecting back to start
+    if is_cyclic:
+        curve_closed = np.vstack([curve_np, curve_np[0:1]])
+        ax.plot(curve_closed[:, 0], curve_closed[:, 1], 'r-', linewidth=2, label='Centerline')
+    else:
+        ax.plot(curve_np[:, 0], curve_np[:, 1], 'r-', linewidth=2, label='Centerline')
     ax.scatter(curve_np[:, 0], curve_np[:, 1], c='red', s=30, zorder=10)
     ax.set_title(f'{title}\nOriginal Image + Centerline', fontsize=12, fontweight='bold')
     ax.legend()
@@ -158,7 +189,12 @@ def visualize_seams(image, curve_points, lattice, seam, seam2=None,
         world_np = world_pts.cpu().numpy()
         ax.plot(world_np[:, 0], world_np[:, 1], 'g-', alpha=0.5, linewidth=0.8)
 
-    ax.plot(curve_np[:, 0], curve_np[:, 1], 'b-', linewidth=2, label='Centerline')
+    # Draw centerline (close loop for cyclic)
+    if is_cyclic:
+        curve_closed = np.vstack([curve_np, curve_np[0:1]])
+        ax.plot(curve_closed[:, 0], curve_closed[:, 1], 'b-', linewidth=2, label='Centerline')
+    else:
+        ax.plot(curve_np[:, 0], curve_np[:, 1], 'b-', linewidth=2, label='Centerline')
 
     # Draw ROI and pair range boundaries if provided
     if roi_range is not None:
@@ -195,8 +231,12 @@ def visualize_seams(image, curve_points, lattice, seam, seam2=None,
 
     # Interpolate seam at fractional n values
     seam_float = seam.float()
-    n_floor = torch.floor(n_vals).long().clamp(0, n_lines - 1)
-    n_ceil = (n_floor + 1) % n_lines if is_cyclic else (n_floor + 1).clamp(0, n_lines - 1)
+    if is_cyclic:
+        n_floor = torch.floor(n_vals).long() % n_lines
+        n_ceil = (n_floor + 1) % n_lines
+    else:
+        n_floor = torch.floor(n_vals).long().clamp(0, n_lines - 1)
+        n_ceil = (n_floor + 1).clamp(0, n_lines - 1)
     n_frac = n_vals - torch.floor(n_vals)
     seam_interp = (1.0 - n_frac) * seam_float[n_floor] + n_frac * seam_float[n_ceil]
 
@@ -214,7 +254,12 @@ def visualize_seams(image, curve_points, lattice, seam, seam2=None,
         world_np2 = world_pts2.cpu().numpy()
         ax.plot(world_np2[:, 0], world_np2[:, 1], 'magenta', linewidth=3, label='Seam 2', zorder=10)
 
-    ax.plot(curve_np[:, 0], curve_np[:, 1], 'r-', linewidth=2, label='Centerline', alpha=0.5)
+    # Draw centerline (close loop for cyclic)
+    if is_cyclic:
+        curve_closed = np.vstack([curve_np, curve_np[0:1]])
+        ax.plot(curve_closed[:, 0], curve_closed[:, 1], 'r-', linewidth=2, label='Centerline', alpha=0.5)
+    else:
+        ax.plot(curve_np[:, 0], curve_np[:, 1], 'r-', linewidth=2, label='Centerline', alpha=0.5)
 
     # Draw ROI and pair range boundaries if provided
     if roi_range is not None:
@@ -224,6 +269,9 @@ def visualize_seams(image, curve_points, lattice, seam, seam2=None,
             lattice_pts_b = torch.stack([u_vals_b, n_vals_b], dim=1)
             world_pts_b = lattice.inverse_mapping(lattice_pts_b)
             world_np_b = world_pts_b.cpu().numpy()
+            # Debug: print first point to see where it's actually drawn
+            if u_boundary == roi_range[0]:
+                print(f"      DEBUG: ROI inner boundary u={u_boundary} maps to world point {world_np_b[0]}")
             ax.plot(world_np_b[:, 0], world_np_b[:, 1], 'y--', alpha=0.8, linewidth=2, label='ROI window' if u_boundary == roi_range[0] else '')
 
     if pair_range is not None:
@@ -233,6 +281,13 @@ def visualize_seams(image, curve_points, lattice, seam, seam2=None,
             lattice_pts_b = torch.stack([u_vals_b, n_vals_b], dim=1)
             world_pts_b = lattice.inverse_mapping(lattice_pts_b)
             world_np_b = world_pts_b.cpu().numpy()
+            # Debug: print first point to see where it's actually drawn
+            if u_boundary == pair_range[0]:
+                print(f"      DEBUG: Pair inner boundary u={u_boundary} maps to world point {world_np_b[0]}")
+                # Calculate radius from center
+                center_x, center_y = 256, 256
+                radius = np.sqrt((world_np_b[0,0] - center_x)**2 + (world_np_b[0,1] - center_y)**2)
+                print(f"      DEBUG: This is at radius {radius:.1f} from center (should be ~210)")
             ax.plot(world_np_b[:, 0], world_np_b[:, 1], 'orange', linestyle='--', alpha=0.8, linewidth=2, label='Pair window' if u_boundary == pair_range[0] else '')
 
     ax.set_title('Image + Computed Seam(s)', fontsize=12, fontweight='bold')
@@ -255,9 +310,18 @@ def visualize_lattice_grid(curve_points, lattice, title, filename):
     curve_np = curve_points.cpu().numpy()
     device = curve_points.device
 
+    # Check if lattice is cyclic
+    is_cyclic = hasattr(lattice, '_cyclic') and lattice._cyclic
+
     # Panel 1: Centerline + scanlines
     ax = axes[0]
-    ax.plot(curve_np[:, 0], curve_np[:, 1], 'b-', linewidth=3, label='Centerline', zorder=10)
+
+    # For cyclic curves, close the loop
+    if is_cyclic:
+        curve_closed = np.vstack([curve_np, curve_np[0:1]])
+        ax.plot(curve_closed[:, 0], curve_closed[:, 1], 'b-', linewidth=3, label='Centerline', zorder=10)
+    else:
+        ax.plot(curve_np[:, 0], curve_np[:, 1], 'b-', linewidth=3, label='Centerline', zorder=10)
     ax.scatter(curve_np[:, 0], curve_np[:, 1], c='blue', s=40, zorder=11)
 
     # Draw sample scanlines
@@ -315,7 +379,12 @@ def visualize_lattice_grid(curve_points, lattice, title, filename):
         world_np = world_pts.cpu().numpy()
         ax.plot(world_np[:, 0], world_np[:, 1], 'g-', alpha=0.5, linewidth=0.8)
 
-    ax.plot(curve_np[:, 0], curve_np[:, 1], 'b-', linewidth=3, label='Centerline', zorder=10)
+    # Draw centerline (close loop for cyclic)
+    if is_cyclic:
+        curve_closed = np.vstack([curve_np, curve_np[0:1]])
+        ax.plot(curve_closed[:, 0], curve_closed[:, 1], 'b-', linewidth=3, label='Centerline', zorder=10)
+    else:
+        ax.plot(curve_np[:, 0], curve_np[:, 1], 'b-', linewidth=3, label='Centerline', zorder=10)
 
     ax.set_aspect('equal')
     ax.invert_yaxis()
@@ -358,10 +427,10 @@ def test_sine_wave():
     # Visualize lattice structure
     visualize_lattice_grid(curve_points, lattice, "Sine Wave", "lattice_sine.png")
 
-    # Compute and visualize seam
-    print("   Computing seam...")
+    # Compute and visualize seam pairs (shrink sine band)
+    print("   Computing seam pairs (shrink sine band)...")
     test_image = create_test_image_from_curve(curve_points, 400, 400, band_width=50, device=device)
-    lattice_width = lattice._recommended_lattice_width
+    lattice_width = int(2 * lattice._perp_extent)  # 160
 
     # Compute energy and resample to lattice
     energy = gradient_magnitude_energy(test_image)
@@ -369,13 +438,27 @@ def test_sine_wave():
         energy = energy.unsqueeze(0)
     lattice_energy = lattice.resample_to_lattice_space(energy, lattice_width).squeeze(0)
 
-    # Find seam in lattice space
-    from src.seam import greedy_seam
-    seam = greedy_seam(lattice_energy, direction='vertical')
+    # Define windows: sine band in middle, background on side
+    # Centerline at u=80, band extends ±25px (u=55 to u=105)
+    # ROI: Sine band (u=60-100)
+    # Pair: Background (u=110-140)
+    roi_range = (60, 100)
+    pair_range = (110, 140)
 
-    print(f"   Seam shape: {seam.shape}, range: [{seam.min()}, {seam.max()}]")
-    visualize_seams(test_image, curve_points, lattice, seam,
-                   title="Sine Wave", filename="seam_sine.png")
+    print(f"   Lattice width: {lattice_width}")
+    print(f"   ROI range (sine band): {roi_range}")
+    print(f"   Pair range (background): {pair_range}")
+
+    # Find seam pairs in lattice space
+    from src.seam import greedy_seam_windowed
+    roi_seam = greedy_seam_windowed(lattice_energy, roi_range, direction='vertical')
+    pair_seam = greedy_seam_windowed(lattice_energy, pair_range, direction='vertical')
+
+    print(f"   ROI seam: {roi_seam.shape}, range: [{roi_seam.min()}, {roi_seam.max()}]")
+    print(f"   Pair seam: {pair_seam.shape}, range: [{pair_seam.min()}, {pair_seam.max()}]")
+    visualize_seams(test_image, curve_points, lattice, roi_seam, pair_seam,
+                   roi_range=roi_range, pair_range=pair_range,
+                   title="Sine Wave Seam Pairs (Shrink Band)", filename="seam_sine_pairs.png")
 
 
 def test_arch():
@@ -514,19 +597,19 @@ def test_bagel():
 
     # Bagel centerline - circle at middle radius between hole and outer edge
     center = (256, 256)
-    middle_radius = 80  # Between hole and outer edge
+    middle_radius = 150  # Between hole and outer edge (make bigger for visibility)
     angles = torch.linspace(0, 2*np.pi, 64, dtype=torch.float32, device=device)[:-1]  # Exclude duplicate
     x = center[0] + middle_radius * torch.cos(angles)
     y = center[1] + middle_radius * torch.sin(angles)
     curve_points = torch.stack([x, y], dim=1)
 
     # Build lattice (CYCLIC for closed curve)
-    # Centerline at radius 80, need to cover bagel + background
-    # Bagel spans radius 50-110 (60px wide), add background padding
+    # Centerline at radius 150, need to cover bagel + background
+    # Bagel will span radius 100-200 (100px wide), add background padding
     lattice = Lattice2D.from_curve_points(
         curve_points=curve_points,
         n_lines=32,
-        perp_extent=50,  # Cover from inside hole (radius 30) to outside (radius 130)
+        perp_extent=80,  # Cover from inside hole to outside background
         cyclic=True,  # Connect last scanline to first (Section 3.5)
         device=device
     )
@@ -540,12 +623,12 @@ def test_bagel():
 
     # Compute and visualize seam pairs (grow bagel)
     print("   Computing seam pairs (grow bagel)...")
-    # Create bagel image with hole
+    # Create bagel image with hole (larger for visibility)
     center = (256, 256)
-    inner_radius = 50  # Hole
-    outer_radius = 110  # Outer edge (centerline at radius 80)
+    inner_radius = 100  # Hole
+    outer_radius = 200  # Outer edge (centerline at radius 150)
     test_image = create_bagel_image(center, inner_radius, outer_radius, 512, 512, device=device)
-    lattice_width = int(2 * lattice._perp_extent)  # 100
+    lattice_width = int(2 * lattice._perp_extent)  # 160
 
     # Compute energy and resample to lattice
     energy = gradient_magnitude_energy(test_image)
@@ -553,19 +636,35 @@ def test_bagel():
         energy = energy.unsqueeze(0)
     lattice_energy = lattice.resample_to_lattice_space(energy, lattice_width).squeeze(0)
 
-    # Define windows for growing the bagel outward
-    # Centerline at u=50 (radius 80)
-    # Bagel extends from radius 50-110, so u≈20 to u≈80
-    # ROI: Outer part of bagel (u=65-80, radius 95-110, to expand bagel)
-    # Pair: Background beyond bagel (u=85-95, radius 115-125)
-    roi_range = (65, 80)
-    pair_range = (85, 95)
+    # Define windows for growing/shrinking the bagel (keeping hole size constant)
+    # Centerline at u=80 (radius 150)
+    # Bagel extends from radius 100-200 → u≈30 to u≈130
+    # ROI: The entire bagel donut (u=30-130, radius 100-200)
+    # Pair: Background well outside bagel (u=140-160, radius 210-230)
+    # This allows growing bagel outward (insert in bagel, remove from background)
+    roi_range = (30, 130)
+    pair_range = (140, 160)
 
     print(f"   Lattice width: {lattice_width}")
-    print(f"   ROI range (bagel outer): {roi_range}")
-    print(f"   Pair range (background): {pair_range}")
+    print(f"   perp_extent: {lattice._perp_extent}")
+    print(f"   ROI range (full bagel donut): {roi_range}")
+    print(f"   Pair range (background outside): {pair_range}")
+
+    # Debug: check what radius these map to
+    # For circular lattice: radius = centerline_radius + (u - perp_extent)
+    # centerline is at radius 150
+    centerline_radius = 150
+    roi_inner_radius = centerline_radius + (roi_range[0] - lattice._perp_extent)
+    roi_outer_radius = centerline_radius + (roi_range[1] - lattice._perp_extent)
+    pair_inner_radius = centerline_radius + (pair_range[0] - lattice._perp_extent)
+    pair_outer_radius = centerline_radius + (pair_range[1] - lattice._perp_extent)
+    print(f"   ROI maps to radius: {roi_inner_radius} to {roi_outer_radius}")
+    print(f"   Pair maps to radius: {pair_inner_radius} to {pair_outer_radius}")
 
     # Find seam pairs in lattice space
+    # NOTE: For cyclic lattices, paper uses inverted Gaussian guide on energy to ensure
+    # seam starts and ends at same location (Section 4.0.1, Cyclic Greedy Seams).
+    # With sesame seed texture, seams should be more interesting than just circles.
     from src.seam import greedy_seam_windowed
     roi_seam = greedy_seam_windowed(lattice_energy, roi_range, direction='vertical')
     pair_seam = greedy_seam_windowed(lattice_energy, pair_range, direction='vertical')
@@ -598,11 +697,11 @@ def main():
     print("  - lattice_arch.png")
     print("  - lattice_river.png")
     print("  - lattice_bagel.png")
-    print("\nSeam visualization:")
-    print("  - seam_sine.png (Single seam)")
-    print("  - seam_arch.png (Single seam)")
-    print("  - seam_river_pairs.png (Seam pairs: ROI + compensating)")
-    print("  - seam_bagel_pairs.png (Seam pairs: hole + outer)")
+    print("\nSeam pairs visualization:")
+    print("  - seam_sine_pairs.png (Shrink sine band)")
+    print("  - seam_arch_pairs.png (Grow arch)")
+    print("  - seam_river_pairs.png (Shrink river)")
+    print("  - seam_bagel_pairs.png (Grow bagel)")
     print("\nEach seam visualization shows:")
     print("  Panel 1: Original image + centerline")
     print("  Panel 2: Image + lattice grid overlay")
