@@ -156,13 +156,13 @@ def figure_arch_carving():
 
 
 # -----------------------------------------------------------------------
-# Figure 3: Seam pairs on synthetic bagel (shrink the hole)
+# Figure 3: Seam pairs on synthetic bagel (shrink/grow the ring itself)
 # This is the Figure 10/22 analog from the paper
 # -----------------------------------------------------------------------
 
 def figure_synthetic_bagel_seam_pairs():
-    """Create a synthetic bagel and use seam pairs to shrink the hole
-    while keeping the outer boundary unchanged."""
+    """Create a synthetic bagel and use seam pairs to shrink or grow
+    the ring body while keeping the image boundary unchanged."""
     print("\n--- Figure: Synthetic Bagel Seam Pairs (Figure 10 analog) ---")
     torch.manual_seed(42)
     H, W = 200, 200
@@ -191,34 +191,43 @@ def figure_synthetic_bagel_seam_pairs():
     circle_y = cy + mid_r * torch.sin(theta)
     curve_pts = torch.stack([circle_x, circle_y], dim=1)
 
-    perp = (outer_r - inner_r) / 2 + 10
+    perp = (outer_r - inner_r) / 2 + 15
     lat = Lattice2D.from_curve_points(curve_pts, n_lines=64, perp_extent=perp, cyclic=True)
 
-    # Seam pairs: ROI targets inner ring edge, pair targets outer ring edge.
     # In lattice u-coordinates:
     #   u = perp_extent → centerline (on the circle at mid_r)
-    #   u = perp_extent - (mid_r - inner_r) → inner ring edge
-    #   u = perp_extent + (outer_r - mid_r) → outer ring edge
+    #   u < perp_extent → toward center (inner/hole side)
+    #   u > perp_extent → toward outside
     lattice_w = int(2 * perp)
-    inner_u = int(perp - (mid_r - inner_r))  # ≈ u of inner edge
-    outer_u = int(perp + (outer_r - mid_r))  # ≈ u of outer edge
-    # Tight windows around the edges so seams follow the ring boundaries
-    roi_u = (max(0, inner_u - 8), inner_u + 8)
-    pair_u = (outer_u - 8, min(lattice_w, outer_u + 8))
+    center_u = int(perp)  # centerline of the ring
+
+    # To SHRINK the bagel ring: ROI = ring body, pair = outer background
+    # Removing seams from the ring compresses it; inserting in background compensates.
+    shrink_roi = (center_u - 15, center_u + 15)  # ring body (both sides of centerline)
+    shrink_pair = (lattice_w - 16, lattice_w)     # outer background
+
+    # To GROW the bagel ring: swap — ROI = outer background, pair = ring body
+    grow_roi = (lattice_w - 16, lattice_w)         # outer background
+    grow_pair = (center_u - 15, center_u + 15)     # ring body
 
     n_seams = 5
-    carved = carve_seam_pairs(image, lat, n_seams=n_seams,
-                               roi_range=roi_u, pair_range=pair_u,
+
+    shrunk = carve_seam_pairs(image, lat, n_seams=n_seams,
+                               roi_range=shrink_roi, pair_range=shrink_pair,
                                lattice_width=lattice_w)
 
+    grown = carve_seam_pairs(image, lat, n_seams=n_seams,
+                              roi_range=grow_roi, pair_range=grow_pair,
+                              lattice_width=lattice_w)
+
     save_comparison(
-        [tensor_to_numpy(image), tensor_to_numpy(carved)],
-        ["Original", f"After {n_seams} seam pairs (hole shrinks)"],
+        [tensor_to_numpy(shrunk), tensor_to_numpy(image), tensor_to_numpy(grown)],
+        [f"Shrunk ({n_seams} pairs)", "Original", f"Grown ({n_seams} pairs)"],
         "fig_synthetic_bagel_pairs.png",
-        "Seam Pairs on Synthetic Bagel — Shrink Hole, Preserve Boundary"
+        "Seam Pairs on Synthetic Bagel — Shrink/Grow Ring Body"
     )
 
-    # Also show the lattice space view
+    # Lattice space view
     energy = gradient_magnitude_energy(image)
     energy_3d = energy.unsqueeze(0)
     lattice_energy = lat.resample_to_lattice_space(energy_3d, lattice_w).squeeze(0)
@@ -231,20 +240,20 @@ def figure_synthetic_bagel_seam_pairs():
     axes[0].set_ylabel("n (angular)")
 
     axes[1].imshow(lattice_energy.cpu().numpy(), cmap='hot', aspect='auto')
-    axes[1].axvline(roi_u[0], color='cyan', linestyle='--', label='ROI')
-    axes[1].axvline(roi_u[1], color='cyan', linestyle='--')
-    axes[1].axvline(pair_u[0], color='magenta', linestyle='--', label='Pair')
-    axes[1].axvline(pair_u[1], color='magenta', linestyle='--')
+    axes[1].axvline(shrink_roi[0], color='cyan', linestyle='--', label='Shrink ROI')
+    axes[1].axvline(shrink_roi[1], color='cyan', linestyle='--')
+    axes[1].axvline(shrink_pair[0], color='magenta', linestyle='--', label='Shrink Pair')
+    axes[1].axvline(shrink_pair[1], color='magenta', linestyle='--')
     axes[1].legend()
-    axes[1].set_title("Energy in Lattice Space")
+    axes[1].set_title("Energy + Shrink Windows")
     axes[1].set_xlabel("u (radial)")
 
-    # Show seam on energy
-    seam = greedy_seam_windowed(normalize_energy(lattice_energy), roi_u)
+    # Show seams
+    seam = greedy_seam_windowed(normalize_energy(lattice_energy), shrink_roi)
     n_idx = np.arange(len(seam))
     axes[2].imshow(lattice_energy.cpu().numpy(), cmap='hot', aspect='auto', alpha=0.6)
     axes[2].plot(seam.cpu().numpy(), n_idx, 'cyan', linewidth=2, label='ROI seam')
-    pair_seam = greedy_seam_windowed(normalize_energy(lattice_energy), pair_u)
+    pair_seam = greedy_seam_windowed(normalize_energy(lattice_energy), shrink_pair)
     axes[2].plot(pair_seam.cpu().numpy(), n_idx, 'magenta', linewidth=2, label='Pair seam')
     axes[2].legend()
     axes[2].set_title("Seams in Lattice Space")
@@ -295,24 +304,46 @@ def figure_real_bagel_seam_pairs():
     lat = Lattice2D.from_curve_points(curve_pts, n_lines=48, perp_extent=perp, cyclic=True)
 
     lattice_w = int(2 * perp)
-    # ROI: inner portion (bagel body), Pair: outer portion (background)
-    roi_u = (int(perp * 0.3), int(perp * 0.9))
-    pair_u = (int(perp * 1.3), int(perp * 1.8))
+    center_u = int(perp)
 
+    # To SHRINK the left bagel: ROI = bagel body, pair = outer background
+    shrink_roi = (center_u - 15, center_u + 15)
+    shrink_pair = (lattice_w - 16, lattice_w)
+
+    # To GROW the left bagel: ROI = outer background, pair = bagel body
+    grow_roi = (lattice_w - 16, lattice_w)
+    grow_pair = (center_u - 15, center_u + 15)
+
+    # Show progression of shrinking
     results = [tensor_to_numpy(image)]
     titles = ["Original"]
 
     for n_seams in [3, 8, 15]:
         carved = carve_seam_pairs(image, lat, n_seams=n_seams,
-                                   roi_range=roi_u, pair_range=pair_u,
+                                   roi_range=shrink_roi, pair_range=shrink_pair,
                                    lattice_width=lattice_w)
         results.append(tensor_to_numpy(carved))
-        titles.append(f"{n_seams} seam pairs")
+        titles.append(f"Shrink {n_seams}")
 
     save_comparison(
         results, titles,
-        "fig_real_bagel_seam_pairs.png",
+        "fig_real_bagel_shrink.png",
         "Real Bagel: Shrink Left Half via Seam Pairs"
+    )
+
+    # Show grow vs original vs shrink
+    grown = carve_seam_pairs(image, lat, n_seams=5,
+                              roi_range=grow_roi, pair_range=grow_pair,
+                              lattice_width=lattice_w)
+    shrunk = carve_seam_pairs(image, lat, n_seams=5,
+                               roi_range=shrink_roi, pair_range=shrink_pair,
+                               lattice_width=lattice_w)
+
+    save_comparison(
+        [tensor_to_numpy(shrunk), tensor_to_numpy(image), tensor_to_numpy(grown)],
+        ["Shrunk (5 pairs)", "Original", "Grown (5 pairs)"],
+        "fig_real_bagel_seam_pairs.png",
+        "Real Bagel: Shrink vs Grow Left Half"
     )
 
     # Also show lattice overlay on original
