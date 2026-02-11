@@ -88,6 +88,10 @@ class Lattice2D:
         This is the paper's approach: take a sequence of (x, y) points defining
         a curve, compute tangents, build perpendicular scanlines.
 
+        The input points are resampled at equal arc length intervals to ensure
+        uniform spacing along the curve. Scanlines are positioned perpendicular
+        to the curve at these evenly-spaced points.
+
         Args:
             curve_points: (N, 2) tensor of (x, y) points defining centerline
             n_lines: Number of scanlines perpendicular to curve
@@ -98,6 +102,37 @@ class Lattice2D:
             Lattice with scanlines perpendicular to the curve
         """
         N = curve_points.shape[0]
+
+        # Resample curve at equal arc length intervals
+        # Compute cumulative arc length
+        diffs = curve_points[1:] - curve_points[:-1]
+        segment_lengths = torch.sqrt((diffs ** 2).sum(dim=1))
+        cumulative_length = torch.cat([
+            torch.zeros(1, device=device),
+            torch.cumsum(segment_lengths, dim=0)
+        ])
+        total_length = cumulative_length[-1]
+
+        # Resample at equal arc length intervals
+        target_lengths = torch.linspace(0, total_length, n_lines, device=device)
+
+        # Interpolate to find points at target arc lengths
+        resampled_points = []
+        for target_len in target_lengths:
+            # Find segment containing this arc length
+            idx = torch.searchsorted(cumulative_length, target_len)
+            idx = torch.clamp(idx, 1, N - 1)
+
+            # Interpolate within segment
+            len_before = cumulative_length[idx - 1]
+            len_after = cumulative_length[idx]
+            segment_frac = (target_len - len_before) / (len_after - len_before + 1e-8)
+
+            pt = (1 - segment_frac) * curve_points[idx - 1] + segment_frac * curve_points[idx]
+            resampled_points.append(pt)
+
+        curve_points = torch.stack(resampled_points)
+        N = n_lines
 
         # Compute tangents by finite differences
         tangents = torch.zeros_like(curve_points)
@@ -142,10 +177,20 @@ class Lattice2D:
         #   u=2*perp_extent: other side (centerline + perp_extent * normal)
         origins = centerline_pts - perp_extent * scanline_tangents
 
-        # Spacing between scanlines (arc length approximation)
-        spacing = torch.ones(n_lines, device=device) * (2 * perp_extent / n_lines)
+        # Spacing between scanlines
+        # This is the perpendicular distance between adjacent scanlines
+        scanline_spacing = total_length / (n_lines - 1) if n_lines > 1 else 1.0
+        spacing = torch.ones(n_lines, device=device) * scanline_spacing
 
-        return cls(origins, scanline_tangents, spacing)
+        lattice = cls(origins, scanline_tangents, spacing)
+
+        # Store metadata for recommended lattice_width
+        # For square cells, lattice_width should match: 2*perp_extent / scanline_spacing
+        lattice._curve_length = total_length
+        lattice._perp_extent = perp_extent
+        lattice._recommended_lattice_width = int(2 * perp_extent / scanline_spacing)
+
+        return lattice
 
     @classmethod
     def from_horizontal_curve(cls, y_fn, x_range: Tuple[float, float],

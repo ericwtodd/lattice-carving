@@ -149,6 +149,9 @@ def test_sine_wave():
     )
     print(f"   Lattice scanlines: {lattice.n_lines}")
     print(f"   Perpendicular extent: ±{perp_extent} pixels")
+    if hasattr(lattice, '_recommended_lattice_width'):
+        print(f"   Recommended lattice_width for square cells: {lattice._recommended_lattice_width}")
+        print(f"   Scanline spacing: {lattice.spacing[0].item():.2f} pixels")
 
     # Visualize
     print("3. Creating visualization...")
@@ -188,6 +191,9 @@ def test_arc():
     )
     print(f"   Lattice scanlines: {lattice.n_lines}")
     print(f"   Perpendicular extent: ±{perp_extent} pixels")
+    if hasattr(lattice, '_recommended_lattice_width'):
+        print(f"   Recommended lattice_width for square cells: {lattice._recommended_lattice_width}")
+        print(f"   Scanline spacing: {lattice.spacing[0].item():.2f} pixels")
 
     # Visualize
     print("3. Creating visualization...")
