@@ -325,6 +325,10 @@ class Lattice2D:
         # u = projection along tangent
         u = (best_diff * best_tangent).sum(dim=1)  # (N,)
 
+        # Apply u_offset if present (shift to make u non-negative and centered)
+        if hasattr(self, '_u_offset'):
+            u = u + self._u_offset
+
         # Compute fractional scanline position by interpolating with neighbor
         best_normal_dist = normal_dist[batch_idx, best_n]  # (N,)
 
