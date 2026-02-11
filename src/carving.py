@@ -5,9 +5,9 @@ High-level carving functions that orchestrate the lattice-guided workflow.
 import torch
 import torch.nn.functional as F
 from typing import Optional, Tuple
-from lattice import Lattice2D
-from energy import gradient_magnitude_energy
-from seam import greedy_seam, greedy_seam_windowed, remove_seam
+from .lattice import Lattice2D
+from .energy import gradient_magnitude_energy
+from .seam import greedy_seam, greedy_seam_windowed, remove_seam
 
 
 def carve_image_traditional(image: torch.Tensor, n_seams: int,
