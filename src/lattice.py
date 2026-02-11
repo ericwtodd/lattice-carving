@@ -120,19 +120,27 @@ class Lattice2D:
             indices_ceil = torch.ceil(indices).long().clamp(max=N - 1)
             frac = indices - indices_floor.float()
 
-            origins = (1 - frac).unsqueeze(1) * curve_points[indices_floor] + \
-                     frac.unsqueeze(1) * curve_points[indices_ceil]
+            centerline_pts = (1 - frac).unsqueeze(1) * curve_points[indices_floor] + \
+                            frac.unsqueeze(1) * curve_points[indices_ceil]
             scanline_tangents = (1 - frac).unsqueeze(1) * normals[indices_floor] + \
                                frac.unsqueeze(1) * normals[indices_ceil]
         else:
             # Subsample the curve
             indices = torch.linspace(0, N - 1, n_lines, device=device).long()
-            origins = curve_points[indices]
+            centerline_pts = curve_points[indices]
             scanline_tangents = normals[indices]
 
         # Normalize tangents again after interpolation
         norms = torch.sqrt((scanline_tangents ** 2).sum(dim=1, keepdim=True))
         scanline_tangents = scanline_tangents / (norms + 1e-8)
+
+        # IMPORTANT: Offset origins so centerline is at u=perp_extent (middle of scanline)
+        # Instead of origin being on centerline (which makes u=0 to 2*perp_extent asymmetric),
+        # we shift origin back by perp_extent so:
+        #   u=0: one side (centerline - perp_extent * normal)
+        #   u=perp_extent: centerline (middle)
+        #   u=2*perp_extent: other side (centerline + perp_extent * normal)
+        origins = centerline_pts - perp_extent * scanline_tangents
 
         # Spacing between scanlines (arc length approximation)
         spacing = torch.ones(n_lines, device=device) * (2 * perp_extent / n_lines)
