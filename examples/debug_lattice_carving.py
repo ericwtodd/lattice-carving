@@ -326,9 +326,9 @@ def debug_bagel():
     print(f"   Image size: {H}×{W}")
 
     # Create circular lattice
-    print("\n2. Creating circular lattice...")
+    print("\n2. Creating COARSE circular lattice...")
     radius = W * 0.4
-    n_lines = 256
+    n_lines = 32  # COARSE (not 256!)
     lattice = Lattice2D.circular(
         center=center,
         radius=radius,
@@ -336,11 +336,11 @@ def debug_bagel():
         device=device
     )
     print(f"   Radius: {radius:.1f}")
-    print(f"   Number of scanlines: {n_lines}")
+    print(f"   Number of radial scanlines: {n_lines} (coarse, like paper)")
 
-    # Define ROI and pair ranges
-    roi_range = (0, 60)       # Shrink hole
-    pair_range = (140, 200)   # Expand background
+    # Define ROI and pair ranges (adjusted for coarser lattice_width=40)
+    roi_range = (0, 10)       # Shrink hole (inner region)
+    pair_range = (25, 35)     # Expand background (outer region)
     print(f"\n3. Seam pair regions:")
     print(f"   ROI (hole): u ∈ [{roi_range[0]}, {roi_range[1]}]")
     print(f"   Pair (background): u ∈ [{pair_range[0]}, {pair_range[1]}]")
@@ -469,9 +469,9 @@ def debug_river():
         return river_center_y + amplitude * np.sin(frequency * x_norm)
 
     # For river, use CURVED lattice following the river path
-    print("\n2. Creating curved lattice following river...")
+    print("\n2. Creating COARSE curved lattice following river...")
     perp_extent = H / 3  # Extend 1/3 of image height perpendicular to river
-    n_lines = 128  # Number of scanlines perpendicular to river
+    n_lines = 24  # COARSE lattice (not 128!)
 
     lattice = Lattice2D.from_horizontal_curve(
         y_fn=river_centerline,
@@ -480,7 +480,7 @@ def debug_river():
         perp_extent=perp_extent,
         device=device
     )
-    print(f"   Number of scanlines: {lattice.n_lines}")
+    print(f"   Number of scanlines: {lattice.n_lines} (coarse, like paper)")
     print(f"   Perpendicular extent: ±{perp_extent:.1f} pixels from centerline")
 
     # Define ROI and pair ranges for seam pairs
@@ -501,7 +501,7 @@ def debug_river():
 
     # Resample energy to lattice space
     print("5. Resampling energy to lattice space...")
-    lattice_width = 256  # Sample along each scanline
+    lattice_width = 40  # Coarse resolution
     energy_3d = energy.unsqueeze(0)
     lattice_energy = lattice.resample_to_lattice_space(energy_3d, lattice_width)
     lattice_energy = lattice_energy.squeeze(0)
@@ -617,11 +617,29 @@ def debug_arch():
             return base_y  # Outside arch
         return base_y - np.sqrt(max(0, radius**2 - dx**2))
 
-    print("\n2. Creating curved lattice following arch...")
-    x_min = center_x - radius
-    x_max = center_x + radius
-    perp_extent = H / 4  # Extend perpendicular to arch
-    n_lines = 128
+    print("\n2. Auto-detecting ROI from energy...")
+    energy_temp = gradient_magnitude_energy(image)
+    # ROI is where energy is high (arch edges)
+    energy_threshold = energy_temp.mean() + energy_temp.std()
+    roi_mask = energy_temp > energy_threshold
+
+    # Get bounding box of ROI
+    roi_y, roi_x = torch.where(roi_mask)
+    if len(roi_y) > 0:
+        roi_x_min, roi_x_max = roi_x.min().item(), roi_x.max().item()
+        roi_y_min, roi_y_max = roi_y.min().item(), roi_y.max().item()
+        print(f"   ROI bounding box: x=[{roi_x_min:.0f}, {roi_x_max:.0f}], y=[{roi_y_min:.0f}, {roi_y_max:.0f}]")
+    else:
+        # Fallback to arch parameters
+        roi_x_min, roi_x_max = center_x - radius, center_x + radius
+        roi_y_min, roi_y_max = base_y - radius, base_y
+        print(f"   Using fallback ROI from arch parameters")
+
+    print("\n3. Creating COARSE curved lattice covering ROI...")
+    x_min = roi_x_min - 20  # Small padding
+    x_max = roi_x_max + 20
+    perp_extent = (roi_y_max - roi_y_min) / 2 + 20  # Cover ROI height + padding
+    n_lines = 24  # COARSE lattice like in paper (not 128!)
 
     lattice = Lattice2D.from_horizontal_curve(
         y_fn=arch_centerline,
@@ -630,16 +648,17 @@ def debug_arch():
         perp_extent=perp_extent,
         device=device
     )
-    print(f"   Number of scanlines: {lattice.n_lines}")
+    print(f"   Number of scanlines: {lattice.n_lines} (coarse, like paper)")
     print(f"   Perpendicular extent: ±{perp_extent:.1f} pixels from arch")
+    print(f"   Lattice x-range: [{x_min:.1f}, {x_max:.1f}]")
 
     # Compute energy
-    print("\n3. Computing energy...")
+    print("\n4. Computing energy...")
     energy = gradient_magnitude_energy(image)
 
     # Resample energy to lattice space
-    print("4. Resampling energy to lattice space...")
-    lattice_width = 256
+    print("5. Resampling energy to lattice space...")
+    lattice_width = 40  # Coarse resolution matching scanline count
     energy_3d = energy.unsqueeze(0)
     lattice_energy = lattice.resample_to_lattice_space(energy_3d, lattice_width)
     lattice_energy = lattice_energy.squeeze(0)
@@ -647,18 +666,18 @@ def debug_arch():
 
     # Find one seam for traditional comparison
     from src.seam import greedy_seam
-    print("\n5. Finding vertical seam in lattice space...")
+    print("\n6. Finding vertical seam in lattice space...")
     seam = greedy_seam(lattice_energy, direction='vertical')
     print(f"   Seam shape: {seam.shape}")
     print(f"   Seam range: [{seam.min().item():.0f}, {seam.max().item():.0f}]")
 
     # Compute forward mapping for visualization
-    print("\n6. Computing forward mapping for visualization...")
+    print("\n7. Computing forward mapping for visualization...")
     from src.carving import _precompute_forward_mapping
     u_map, n_map = _precompute_forward_mapping(lattice, H, W, device)
 
     # Create visualizations
-    print("7. Creating visualizations...")
+    print("8. Creating visualizations...")
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
 
@@ -722,12 +741,13 @@ def debug_arch():
     print("   Running traditional carving for comparison...")
     from src.carving import carve_image_traditional, carve_image_lattice_guided
 
-    traditional_carved = carve_image_traditional(image, n_seams=50, direction='vertical')
+    n_seams_to_remove = 10  # Fewer seams for coarse lattice
+    traditional_carved = carve_image_traditional(image, n_seams=n_seams_to_remove, direction='vertical')
     print(f"   Traditional carved: {traditional_carved.shape}")
 
     print("   Running lattice-guided carving...")
     lattice_carved = carve_image_lattice_guided(
-        image, lattice, n_seams=50, direction='vertical', lattice_width=lattice_width
+        image, lattice, n_seams=n_seams_to_remove, direction='vertical', lattice_width=lattice_width
     )
     print(f"   Lattice-guided carved: {lattice_carved.shape}")
 
@@ -748,11 +768,11 @@ def debug_arch():
     axes2[0].axis('off')
 
     axes2[1].imshow(traditional_carved.cpu().numpy(), cmap='gray')
-    axes2[1].set_title(f'Traditional Seam Carving\n({traditional_carved.shape[1]}×{traditional_carved.shape[0]})\nArch Distorted', fontsize=14)
+    axes2[1].set_title(f'Traditional Seam Carving ({n_seams_to_remove} seams)\n({traditional_carved.shape[1]}×{traditional_carved.shape[0]})\nArch Distorted', fontsize=14)
     axes2[1].axis('off')
 
     axes2[2].imshow(lattice_carved.cpu().numpy(), cmap='gray')
-    axes2[2].set_title(f'Lattice-Guided Carving\n({lattice_carved.shape[1]}×{lattice_carved.shape[0]})\nArch Preserved(?)', fontsize=14)
+    axes2[2].set_title(f'Lattice-Guided Carving ({n_seams_to_remove} seams)\n({lattice_carved.shape[1]}×{lattice_carved.shape[0]})\nArch Preserved(?)', fontsize=14)
     axes2[2].axis('off')
 
     plt.tight_layout()

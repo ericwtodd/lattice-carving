@@ -283,3 +283,61 @@ For a bagel, the lattice should cover the annular region.
 3. ✅ Arch - curved lattice following semicircle (Figure 3 reference)
 
 **Philosophy:** Follow the paper's implementation as closely as possible. No unnecessary complexity.
+
+### Critical Fix: Sample Original Image Once, Not Iteratively
+
+**Problem discovered:** Our implementation was iteratively warping - each iteration sampled
+from the already-warped image from the previous iteration. This compounds interpolation
+errors and causes blur.
+
+**What we were doing:**
+```python
+current = image.clone()
+for i in range(n_seams):
+    # ... find seam, compute shift ...
+    current = _warp_and_resample(current, ...)  # Sampling from current (already warped!)
+```
+
+**What the paper says (Section 3.3):**
+> "We sample the original pixel data once using the modified mapping"
+
+**Fix applied:**
+```python
+original_image = image.clone()  # Keep original
+cumulative_shift = torch.zeros(...)
+
+for i in range(n_seams):
+    # Compute energy from current state (for seam finding)
+    current_warped = _warp_and_resample(original_image, ..., cumulative_shift)
+    energy = gradient_magnitude_energy(current_warped)
+
+    # Find seam, accumulate shifts
+    # ...
+    cumulative_shift = cumulative_shift + new_shift
+
+# Final: sample from ORIGINAL image once
+result = _warp_and_resample(original_image, ..., cumulative_shift)
+```
+
+This matches the paper's approach: modify the mapping (cumulative shifts), then sample
+the original pixels once at the end.
+
+**Applied to:**
+- `carve_image_lattice_guided()`
+- `carve_seam_pairs()`
+
+**Expected improvement:** Significantly reduced blur, cleaner results.
+
+### Next: ROI-Bounded Lattices
+
+**User insight:** The lattice doesn't need to cover the whole image - just the region of
+interest (ROI) with some surrounding context.
+
+Looking at the paper's figures:
+- Arch: lattice covers only the arch region
+- Ring: lattice covers annular region (inner to outer radius)
+- River: lattice follows the river path with bounded width
+
+Outside the lattice region, pixels are unchanged. This is cleaner and more efficient.
+
+**TODO:** Implement ROI bounds for lattice construction and carving.
