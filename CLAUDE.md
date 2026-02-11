@@ -6,26 +6,34 @@ Research/implementation project for generalized lattice-guided seam carving,
 based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
 (Flynn et al., 2021). The paper PDF is at `generalized-fluid-carving.pdf`.
 
-## Current State (as of 2026-02-11)
+## Current State (as of 2026-02-11 - Evening)
 
-**What works (30 tests passing):**
-- `Lattice2D` class with rectangular and circular constructors
-- Forward mapping (world V → lattice L) and inverse mapping (L → V), fully vectorized
-- Bilinear resampling in both directions via `grid_sample`
-- Gradient magnitude energy (Sobel filters)
-- Greedy and multi-greedy seam algorithms
-- Seam removal
-- End-to-end traditional carving (`carve_image_traditional`)
-- End-to-end lattice-guided carving (`carve_image_lattice_guided`) — but see caveat below
+**What works (lattice construction is SOLID):**
+- ✅ **Lattice2D.from_curve_points()** - Build lattice from user point list (Figure 9)
+  - Arc length resampling for uniform spacing
+  - Symmetric scanline coverage (±perp_extent from centerline)
+  - Origins aligned with user-specified curve points
+  - Forward/inverse mapping with u_offset for centering
+- ✅ `Lattice2D.rectangular()` and `Lattice2D.circular()` constructors
+- ✅ Forward mapping (world V → lattice L) and inverse mapping (L → V), vectorized
+- ✅ Gradient magnitude energy (Sobel filters)
+- ✅ Greedy and multi-greedy seam algorithms
+- ✅ Seam removal and windowed seam finding
 
-**Known issues:**
-1. ✅ FIXED: Cumulative shift bug - was computing shifts against original u_map instead
-   of accounting for previous shifts. Now tracks cumulative_shift correctly.
-2. ⚠️ DEBUGGING: Lattice-guided carving still produces distorted output despite bug fix
-   - Visualization framework created to debug step-by-step
-   - Need to verify: lattice structure, energy resampling, seam interpolation, warping
-3. ⚠️ Tests don't validate correctness - they only check shapes/types, pass even when
-   output is severely distorted
+**Recent critical fixes:**
+1. ✅ **Iterative warping bug** - Was sampling warped image repeatedly (compounds blur)
+   - Fix: Sample from ORIGINAL image once at end using cumulative shifts
+2. ✅ **Cumulative shift bug** - Shifts computed against fixed u_map
+   - Fix: Track cumulative_shift across iterations
+3. ✅ **Asymmetric scanlines** - Only extended one side of curve
+   - Fix: Apply u_offset in both forward AND inverse mapping
+4. ✅ **Origins not aligned** - Were offset from user points
+   - Fix: Keep origins on centerline, use u_offset for symmetric coverage
+
+**Current status:**
+- Lattice construction: **SOLID** ✓
+- Carving algorithms: **FIXED BUT UNTESTED** ⚠️
+- Need validation on real test cases with proper lattices
 
 **What's implemented but needs debugging:**
 1. ✅ **"Carving the mapping" (Section 3.3)** — Implemented in `carve_image_lattice_guided()`
@@ -90,16 +98,24 @@ based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
 
 ## Test Cases for Validation
 
-Three test cases with clear expected behavior:
+Four test cases, each with centerline defined as points:
 
-1. **Bagel (seam pairs)**: Radial lattice, shrink hole while expanding background
-   - Image size unchanged, hole gets smaller, background compensates
+1. **Sine Wave**: Simple sinusoidal curve for basic validation
+   - Centerline: y = 200 + 40*sin(2πx/400)
+   - Tests symmetric coverage, arc length resampling
 
-2. **River (curved lattice)**: Scanlines follow sinusoidal river path
-   - Seam pairs: shrink river width, expand background
+2. **Arch (Figure 3)**: Semicircular arch
+   - Centerline: semicircle from paper's Figure 3
+   - Traditional should squish, lattice-guided should preserve
 
-3. **Arch (Figure 3 reference)**: Semicircular arch, curved lattice
-   - Traditional carving: arch squished horizontally (distorted)
-   - Lattice-guided: arch shape preserved
+3. **River**: Horizontally-flowing sinusoidal river
+   - Centerline: y = 256 + 50*sin(3πx/512)
+   - Scanlines perpendicular to flow
 
-Run: `conda run -n lattice-carving python examples/debug_lattice_carving.py`
+4. **Bagel (seam pairs)**: Circular centerline around hole
+   - Centerline: circle at middle radius between hole and edge
+   - Test seam pairs: shrink hole, expand background
+
+**Current test:** `conda run -n lattice-carving python examples/test_lattice_visualization.py`
+- Validates lattice construction only (no carving yet)
+- Generates: lattice_sine.png, lattice_arch.png, lattice_river.png, lattice_bagel.png
