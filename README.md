@@ -1,6 +1,6 @@
 # Lattice Carving
 
-Implementation of ["Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"](https://doi.org/10.1145/3478513.3480538) (Flynn et al., ACM TOG 2021).
+Implementation of ["Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"](https://doi.org/10.1145/3478513.3480544) (Flynn et al., ACM TOG 2021).
 
 Traditional seam carving only works on rectangular images — seams must flow monotonically from one edge to the other. This paper introduces **lattice-guided seam carving**: define a non-uniform lattice that follows the shape of the region you want to carve, map the energy into "lattice index space" (a rectified grid), find seams there, then map the result back. This lets you carve along curves, around holes, and through arbitrary regions while preserving shape silhouettes.
 

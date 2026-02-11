@@ -314,10 +314,19 @@ class Lattice2D:
         # When two scanlines (e.g. a radial line and its opposite) have the
         # same normal distance, the correct one is the one giving u >= 0.
         tangent_proj = (diff * self.tangents.unsqueeze(0)).sum(dim=2)  # (N, n_lines)
-        penalty = torch.where(tangent_proj < 0,
-                              torch.tensor(1e10, device=device),
-                              torch.zeros(1, device=device))
-        effective_dist = normal_dist + penalty
+
+        # For cyclic lattices (from_curve_points with cyclic=True), origins are
+        # ON the curve and tangents point outward. Pixels inside the curve
+        # legitimately have negative tangent projection to all scanlines, so
+        # the penalty would break the mapping. Only apply it for non-cyclic
+        # lattices (like circular() where opposing radial lines need disambiguation).
+        if hasattr(self, '_cyclic') and self._cyclic:
+            effective_dist = normal_dist
+        else:
+            penalty = torch.where(tangent_proj < 0,
+                                  torch.tensor(1e10, device=device),
+                                  torch.zeros(1, device=device))
+            effective_dist = normal_dist + penalty
 
         # Find closest scanline for each point
         best_n = torch.argmin(effective_dist, dim=1)  # (N,)
@@ -337,7 +346,11 @@ class Lattice2D:
         # Compute fractional scanline position by interpolating with neighbor
         best_normal_dist = normal_dist[batch_idx, best_n]  # (N,)
 
-        next_n = torch.clamp(best_n + 1, 0, self.n_lines - 1)
+        is_cyclic = hasattr(self, '_cyclic') and self._cyclic
+        if is_cyclic:
+            next_n = (best_n + 1) % self.n_lines
+        else:
+            next_n = torch.clamp(best_n + 1, 0, self.n_lines - 1)
         next_normal_dist = normal_dist[batch_idx, next_n]  # (N,)
 
         total_dist = best_normal_dist + next_normal_dist
@@ -347,9 +360,10 @@ class Lattice2D:
             torch.zeros_like(total_dist)
         )
 
-        # At the last scanline, no fractional part
-        at_last = best_n >= self.n_lines - 1
-        frac = torch.where(at_last, torch.zeros_like(frac), frac)
+        if not is_cyclic:
+            # At the last scanline, no fractional part (non-cyclic only)
+            at_last = best_n >= self.n_lines - 1
+            frac = torch.where(at_last, torch.zeros_like(frac), frac)
 
         n_frac = best_n.float() + frac
 
