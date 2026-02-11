@@ -136,8 +136,83 @@ Fig. 6): "this approach introduces significant blurring artifacts."
   back to its starting point (Section 4.0.1, Fig. 12)
 
 **Next Steps — Implementation Plan:**
-1. Implement "carving the mapping" (replaces naive resample→carve→resample)
-2. Implement seam pairs for local region carving
+1. ✓ Implement "carving the mapping" (replaces naive resample→carve→resample)
+2. ✓ Implement seam pairs for local region carving
 3. Implement cyclic lattices
 4. Forward energy function (Rubinstein et al. 2008)
 5. Visualizations and interactive demo
+
+---
+
+## 2026-02-11 - Visualization & Bug Hunting
+
+### Visualization Framework Development
+
+**Goal:** Build convincing visualizations to demonstrate lattice-guided carving works
+correctly (no blur, preserves circular features, enables local region resizing).
+
+**Created visualization script** (`examples/visualize_lattice_carving.py`):
+- Test 1: Concentric circles with circular lattice
+- Test 2: Bagel with seam pairs (shrink hole, expand background)
+- Test 3: Circular grid pattern
+
+**Initial results:** Severe distortion! The lattice-guided outputs were completely broken,
+especially on circular lattices. Traditional carving looked normal, but lattice-guided
+had extreme artifacts.
+
+### Critical Bug Found: Cumulative Shift Accumulation
+
+**Problem identified in `carve_image_lattice_guided()`:**
+
+The algorithm precomputes `u_map` (world pixels → lattice u-coordinates) once, then
+iteratively removes seams. Each iteration computed:
+
+```python
+u_shift = torch.where(u_map >= seam_interp, ones, zeros)
+```
+
+But `u_map` was never updated! After N seams, pixels were getting cumulative shifts
+of up to +N, causing massive distortion. The comparison was always against the
+original u_map, not accounting for previous shifts.
+
+**Fix applied:**
+
+```python
+cumulative_shift = torch.zeros_like(u_map)  # Track across iterations
+for i in range(n_seams):
+    # ... find seam ...
+    u_adjusted = u_map + cumulative_shift  # Account for previous shifts
+    new_shift = torch.where(u_adjusted >= seam_interp, ones, zeros)
+    cumulative_shift = cumulative_shift + new_shift
+    current = _warp_and_resample(current, lattice, u_map, n_map, cumulative_shift)
+```
+
+Same fix applied to `carve_seam_pairs()`.
+
+### Debugging Visualizations
+
+After fix, results still poor. Created `examples/debug_lattice_carving.py` to
+visualize intermediate steps:
+- Original image
+- Lattice structure overlayed on image
+- Energy maps (world space and lattice space)
+- Seam positions in lattice space
+
+**Status:** Debugging in progress. Need to verify:
+1. Lattice structure is correct
+2. Energy resampling is correct
+3. Seam finding is correct
+4. Warping/resampling is correct
+
+### Testing Issues
+
+**Problem:** The 30 passing tests don't actually validate correctness. They only
+check shapes and basic properties, not whether the carving produces good results.
+
+**Action needed:**
+- Remove or rewrite tests that don't validate correctness
+- Add tests that check actual image quality (e.g., verify circles stay circular)
+- Focus testing on the core algorithm, not just shape preservation
+
+**Current priority:** Get visualization working first, then write meaningful tests
+based on what we learn.

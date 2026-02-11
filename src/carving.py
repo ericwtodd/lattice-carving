@@ -218,6 +218,7 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
     u_map, n_map = _precompute_forward_mapping(lattice, H, W, device)
 
     current = image.clone()
+    cumulative_shift = torch.zeros_like(u_map)  # Track total shift across all iterations
 
     for i in range(n_seams):
         # Step 1: Compute energy in world space
@@ -238,13 +239,16 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
         # Step 4: Interpolate seam at each pixel's fractional n
         seam_interp = _interpolate_seam(seam, n_map)
 
-        # Step 5: Compute u-shift: +1 for pixels past the seam
-        u_shift = torch.where(u_map >= seam_interp,
-                              torch.ones_like(u_map),
-                              torch.zeros_like(u_map))
+        # Step 5: Update cumulative shift: +1 for pixels past the seam
+        # Use u_map + cumulative_shift to account for previous seam removals
+        u_adjusted = u_map + cumulative_shift
+        new_shift = torch.where(u_adjusted >= seam_interp,
+                                torch.ones_like(u_map),
+                                torch.zeros_like(u_map))
+        cumulative_shift = cumulative_shift + new_shift
 
         # Step 6: Warp and resample (single bilinear interpolation)
-        current = _warp_and_resample(current, lattice, u_map, n_map, u_shift)
+        current = _warp_and_resample(current, lattice, u_map, n_map, cumulative_shift)
 
     if squeeze_output:
         current = current.squeeze(0)
@@ -297,6 +301,7 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
     u_map, n_map = _precompute_forward_mapping(lattice, H, W, device)
 
     current = image.clone()
+    cumulative_shift = torch.zeros_like(u_map)  # Track total shift across all iterations
 
     for i in range(n_seams):
         # Step 1: Compute energy in world space
@@ -319,19 +324,21 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
         roi_seam_interp = _interpolate_seam(roi_seam, n_map)
         pair_seam_interp = _interpolate_seam(pair_seam, n_map)
 
-        # Step 5: Combined shift
+        # Step 5: Combined shift (account for cumulative shifts)
         # +1 for u >= roi_seam (ROI removal — compress)
         # -1 for u > pair_seam (pair insertion — expand)
-        u_shift = torch.zeros_like(u_map)
-        u_shift = u_shift + torch.where(u_map >= roi_seam_interp,
-                                         torch.ones_like(u_map),
-                                         torch.zeros_like(u_map))
-        u_shift = u_shift + torch.where(u_map > pair_seam_interp,
-                                         -torch.ones_like(u_map),
-                                         torch.zeros_like(u_map))
+        u_adjusted = u_map + cumulative_shift
+        new_shift = torch.zeros_like(u_map)
+        new_shift = new_shift + torch.where(u_adjusted >= roi_seam_interp,
+                                             torch.ones_like(u_map),
+                                             torch.zeros_like(u_map))
+        new_shift = new_shift + torch.where(u_adjusted > pair_seam_interp,
+                                             -torch.ones_like(u_map),
+                                             torch.zeros_like(u_map))
+        cumulative_shift = cumulative_shift + new_shift
 
         # Step 6: Warp and resample
-        current = _warp_and_resample(current, lattice, u_map, n_map, u_shift)
+        current = _warp_and_resample(current, lattice, u_map, n_map, cumulative_shift)
 
     if squeeze_output:
         current = current.squeeze(0)

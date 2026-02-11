@@ -352,6 +352,9 @@ class TestTraditionalCarving:
 # ---------------------------------------------------------------------------
 # 7. End-to-end lattice-guided carving
 # ---------------------------------------------------------------------------
+# NOTE (2026-02-11): These tests mostly check shapes/types, NOT correctness.
+# They pass even when the algorithm produces severely distorted output.
+# TODO: Add tests that verify actual image quality (e.g., circles stay circular)
 
 class TestLatticeGuidedCarving:
     def test_rectangular_lattice_produces_same_seams_as_traditional(self):
@@ -580,3 +583,5 @@ class TestWindowedSeam:
 
         seam = greedy_seam_windowed(energy, (10, 20))
         assert (seam == 15).all(), f"Expected all 15, got {seam.tolist()}"
+
+# %%
