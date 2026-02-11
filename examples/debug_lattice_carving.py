@@ -114,6 +114,83 @@ def create_river(size=512, device='cpu'):
     return image.clamp(0, 1)
 
 
+def visualize_lattice_grid_cells(image, lattice, seam, lattice_width, color=(0, 1, 1)):
+    """
+    Visualize lattice as a grid of cells in world space.
+
+    Each cell in lattice space is mapped to a quadrilateral in world space.
+    Cells that are part of the seam are colored.
+
+    Args:
+        image: (H, W) grayscale image
+        lattice: Lattice2D instance
+        seam: (n_lines,) seam positions in lattice space
+        lattice_width: width of lattice space
+        color: RGB color for seam cells
+    """
+    H, W = image.shape
+    device = image.device
+
+    # Create RGB version
+    img_rgb = torch.stack([image, image, image], dim=0)
+
+    # Sample grid points in lattice space
+    n_lines = lattice.n_lines
+    u_step = max(1, lattice_width // 40)  # Sample every ~40th column
+    n_step = max(1, n_lines // 40)  # Sample every ~40th row
+
+    # Draw grid lines at sampled positions
+    for n_idx in range(0, n_lines, n_step):
+        u_vals = torch.arange(0, lattice_width, dtype=torch.float32, device=device)
+        lattice_pts = torch.stack([
+            u_vals,
+            torch.full_like(u_vals, float(n_idx))
+        ], dim=1)
+        world_pts = lattice.inverse_mapping(lattice_pts)
+
+        # Draw line
+        for i in range(len(world_pts) - 1):
+            x0, y0 = world_pts[i]
+            x1, y1 = world_pts[i + 1]
+            # Simple line drawing
+            steps = int(max(abs(x1 - x0), abs(y1 - y0)))
+            if steps > 0:
+                for t in torch.linspace(0, 1, steps):
+                    x = x0 + t * (x1 - x0)
+                    y = y0 + t * (y1 - y0)
+                    xi, yi = int(round(x.item())), int(round(y.item()))
+                    if 0 <= xi < W and 0 <= yi < H:
+                        img_rgb[:, yi, xi] = torch.tensor([0.5, 0.5, 0.5], device=device).unsqueeze(1)
+
+    # Draw seam cells
+    for n_idx in range(n_lines):
+        u_seam = int(seam[n_idx].item())
+        # Draw a filled quad for this cell
+        corners = torch.tensor([
+            [u_seam, n_idx],
+            [u_seam + 1, n_idx],
+            [u_seam + 1, min(n_idx + 1, n_lines - 1)],
+            [u_seam, min(n_idx + 1, n_lines - 1)]
+        ], dtype=torch.float32, device=device)
+
+        world_corners = lattice.inverse_mapping(corners)
+
+        # Fill the quadrilateral (approximate)
+        xs = world_corners[:, 0].cpu().numpy()
+        ys = world_corners[:, 1].cpu().numpy()
+        x_min, x_max = int(xs.min()), int(xs.max())
+        y_min, y_max = int(ys.min()), int(ys.max())
+
+        for yi in range(max(0, y_min), min(H, y_max + 1)):
+            for xi in range(max(0, x_min), min(W, x_max + 1)):
+                # Check if point is inside quad (simple bounding box for now)
+                img_rgb[0, yi, xi] = color[0]
+                img_rgb[1, yi, xi] = color[1]
+                img_rgb[2, yi, xi] = color[2]
+
+    return img_rgb
+
+
 def visualize_lattice_on_image(image, lattice, n_samples=20):
     """
     Overlay lattice structure on image.
@@ -596,9 +673,34 @@ def debug_arch():
     axes[0, 1].set_title('Curved Lattice Structure\n(Red = scanlines perpendicular to arch)', fontsize=12, fontweight='bold')
     axes[0, 1].axis('off')
 
-    # Row 1, Col 3: Energy map
-    axes[0, 2].imshow(energy.cpu().numpy(), cmap='hot')
-    axes[0, 2].set_title('Energy Map (World Space)', fontsize=14, fontweight='bold')
+    # Row 1, Col 3: Energy map with seam overlayed
+    print("   Creating world-space seam visualization...")
+    # Convert seam from lattice space to world space
+    seam_lattice_pts = torch.stack([
+        seam.float(),
+        torch.arange(n_lines, dtype=torch.float32, device=device)
+    ], dim=1)
+    seam_world_pts = lattice.inverse_mapping(seam_lattice_pts)
+
+    # Create RGB version of energy
+    energy_norm = (energy - energy.min()) / (energy.max() - energy.min() + 1e-8)
+    energy_rgb = torch.stack([energy_norm, energy_norm, energy_norm], dim=0)
+
+    # Draw seam on energy map (cyan)
+    for i in range(n_lines):
+        x, y = seam_world_pts[i]
+        xi, yi = int(round(x.item())), int(round(y.item()))
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                if dx*dx + dy*dy <= 4:
+                    yy, xx = yi + dy, xi + dx
+                    if 0 <= xx < W and 0 <= yy < H:
+                        energy_rgb[0, yy, xx] = 0.0
+                        energy_rgb[1, yy, xx] = 1.0  # Cyan
+                        energy_rgb[2, yy, xx] = 1.0
+
+    axes[0, 2].imshow(energy_rgb.permute(1, 2, 0).cpu().numpy())
+    axes[0, 2].set_title('Energy + Seam (World Space)\nCyan = vertical seam in lattice space', fontsize=12, fontweight='bold')
     axes[0, 2].axis('off')
 
     # Row 2, Col 1: Lattice energy

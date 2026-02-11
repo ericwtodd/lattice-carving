@@ -217,12 +217,16 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
     # Precompute forward mapping once (lattice geometry is fixed)
     u_map, n_map = _precompute_forward_mapping(lattice, H, W, device)
 
-    current = image.clone()
+    original_image = image.clone()  # Keep original for sampling
     cumulative_shift = torch.zeros_like(u_map)  # Track total shift across all iterations
 
     for i in range(n_seams):
-        # Step 1: Compute energy in world space
-        energy = gradient_magnitude_energy(current)
+        # Step 1: Compute energy from current warped state
+        if i == 0:
+            energy = gradient_magnitude_energy(original_image)
+        else:
+            current_warped = _warp_and_resample(original_image, lattice, u_map, n_map, cumulative_shift)
+            energy = gradient_magnitude_energy(current_warped)
 
         # Step 2: Resample energy to lattice space
         if energy.dim() == 2:
@@ -247,8 +251,8 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
                                 torch.zeros_like(u_map))
         cumulative_shift = cumulative_shift + new_shift
 
-        # Step 6: Warp and resample (single bilinear interpolation)
-        current = _warp_and_resample(current, lattice, u_map, n_map, cumulative_shift)
+    # Step 6: Final warp - sample from ORIGINAL image using cumulative shift
+    current = _warp_and_resample(original_image, lattice, u_map, n_map, cumulative_shift)
 
     if squeeze_output:
         current = current.squeeze(0)
@@ -300,12 +304,16 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
     # Precompute forward mapping once
     u_map, n_map = _precompute_forward_mapping(lattice, H, W, device)
 
-    current = image.clone()
+    original_image = image.clone()  # Keep original for sampling
     cumulative_shift = torch.zeros_like(u_map)  # Track total shift across all iterations
 
     for i in range(n_seams):
-        # Step 1: Compute energy in world space
-        energy = gradient_magnitude_energy(current)
+        # Step 1: Compute energy from current warped state
+        if i == 0:
+            energy = gradient_magnitude_energy(original_image)
+        else:
+            current_warped = _warp_and_resample(original_image, lattice, u_map, n_map, cumulative_shift)
+            energy = gradient_magnitude_energy(current_warped)
 
         # Step 2: Resample energy to lattice space
         if energy.dim() == 2:
@@ -337,8 +345,8 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
                                              torch.zeros_like(u_map))
         cumulative_shift = cumulative_shift + new_shift
 
-        # Step 6: Warp and resample
-        current = _warp_and_resample(current, lattice, u_map, n_map, cumulative_shift)
+    # Step 6: Final warp - sample from ORIGINAL image using cumulative shift
+    current = _warp_and_resample(original_image, lattice, u_map, n_map, cumulative_shift)
 
     if squeeze_output:
         current = current.squeeze(0)
