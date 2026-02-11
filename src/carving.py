@@ -180,7 +180,8 @@ def _warp_and_resample(image: torch.Tensor, lattice: Lattice2D,
 def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
                                 n_seams: int, direction: str = 'vertical',
                                 lattice_width: Optional[int] = None,
-                                roi_bounds: Optional[Tuple[float, float]] = None) -> torch.Tensor:
+                                roi_bounds: Optional[Tuple[float, float]] = None,
+                                n_candidates: int = 1) -> torch.Tensor:
     """
     Lattice-guided seam carving using the "carving the mapping" approach.
 
@@ -201,6 +202,7 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
         lattice_width: Width of lattice space (if None, uses image width)
         roi_bounds: Optional (u_min, u_max) — only warp pixels whose u-coordinate
             falls within these bounds. Pixels outside stay unchanged.
+        n_candidates: Number of multi-greedy starting points (1 = single greedy)
 
     Returns:
         Carved image in world space (same shape as input)
@@ -244,7 +246,8 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
         lattice_energy = normalize_energy(lattice_energy)
 
         # Step 3: Find seam in lattice space
-        seam = greedy_seam(lattice_energy, direction=direction)
+        seam = greedy_seam(lattice_energy, direction=direction,
+                           n_candidates=n_candidates)
 
         # Step 4: Interpolate seam at each pixel's fractional n
         seam_interp = _interpolate_seam(seam, n_map)
@@ -279,7 +282,8 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
                      n_seams: int, roi_range: Tuple[int, int],
                      pair_range: Tuple[int, int],
                      direction: str = 'vertical',
-                     lattice_width: Optional[int] = None) -> torch.Tensor:
+                     lattice_width: Optional[int] = None,
+                     n_candidates: int = 1) -> torch.Tensor:
     """
     Seam pair carving for local region resizing without changing global boundaries.
 
@@ -300,6 +304,7 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
         pair_range: (u_start, u_end) — lattice u-coordinate range for pair region
         direction: 'vertical' or 'horizontal'
         lattice_width: Width of lattice space (if None, uses image width)
+        n_candidates: Number of multi-greedy starting points (1 = single greedy)
 
     Returns:
         Carved image in world space (same shape as input)
@@ -343,8 +348,10 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
         lattice_energy = normalize_energy(lattice_energy)
 
         # Step 3: Find seams in windowed regions
-        roi_seam = greedy_seam_windowed(lattice_energy, roi_range, direction=direction)
-        pair_seam = greedy_seam_windowed(lattice_energy, pair_range, direction=direction)
+        roi_seam = greedy_seam_windowed(lattice_energy, roi_range, direction=direction,
+                                        n_candidates=n_candidates)
+        pair_seam = greedy_seam_windowed(lattice_energy, pair_range, direction=direction,
+                                         n_candidates=n_candidates)
 
         # Step 4: Interpolate both seams at each pixel's fractional n
         roi_seam_interp = _interpolate_seam(roi_seam, n_map)

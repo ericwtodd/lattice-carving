@@ -10,21 +10,18 @@ import torch
 from typing import List, Tuple
 
 
-def greedy_seam(energy: torch.Tensor, direction: str = 'vertical') -> torch.Tensor:
+def greedy_seam(energy: torch.Tensor, direction: str = 'vertical',
+                n_candidates: int = 1) -> torch.Tensor:
     """
     Compute a seam using the greedy approach from Flynn et al. 2021.
 
-    The greedy approach:
-    1. Start at the first row/column
-    2. For each subsequent row/column, move to the lowest energy neighbor
-    3. Continue until reaching the end
-
-    This is much faster than graph-cut (O(n) vs O(n²)) and produces
-    comparable visual quality.
+    With n_candidates > 1, uses multi-greedy: tries multiple starting
+    points and returns the lowest total-energy seam (Section 4.0.1).
 
     Args:
         energy: Energy map (H, W)
         direction: 'vertical' or 'horizontal'
+        n_candidates: Number of starting points to try (1 = single greedy)
 
     Returns:
         Seam indices - for vertical: (H,) with column index per row
@@ -33,47 +30,64 @@ def greedy_seam(energy: torch.Tensor, direction: str = 'vertical') -> torch.Tens
     H, W = energy.shape
 
     if direction == 'vertical':
-        # Vertical seam (remove one pixel from each row)
-        seam = torch.zeros(H, dtype=torch.long, device=energy.device)
+        if n_candidates <= 1:
+            start_cols = [torch.argmin(energy[0]).item()]
+        else:
+            start_cols = torch.linspace(0, W - 1, n_candidates, dtype=torch.long,
+                                        device=energy.device).tolist()
 
-        # Start at the row with minimum energy in first row
-        seam[0] = torch.argmin(energy[0])
+        best_seam = None
+        best_energy = float('inf')
 
-        # Greedy selection: move to lowest energy neighbor in next row
-        for i in range(1, H):
-            prev_col = seam[i - 1].item()
+        for start_col in start_cols:
+            seam = torch.zeros(H, dtype=torch.long, device=energy.device)
+            seam[0] = start_col
+            total = energy[0, start_col].item()
 
-            # Consider neighbors: left, center, right
-            left = max(0, prev_col - 1)
-            right = min(W - 1, prev_col + 1)
+            for i in range(1, H):
+                prev_col = seam[i - 1].item()
+                left = max(0, prev_col - 1)
+                right = min(W - 1, prev_col + 1)
+                neighbors = energy[i, left:right + 1]
+                local_min_idx = torch.argmin(neighbors)
+                seam[i] = left + local_min_idx
+                total += energy[i, seam[i]].item()
 
-            # Find minimum energy neighbor
-            neighbors = energy[i, left:right + 1]
-            local_min_idx = torch.argmin(neighbors)
-            seam[i] = left + local_min_idx
+            if total < best_energy:
+                best_energy = total
+                best_seam = seam
 
-        return seam
+        return best_seam
 
     elif direction == 'horizontal':
-        # Horizontal seam (remove one pixel from each column)
-        seam = torch.zeros(W, dtype=torch.long, device=energy.device)
+        if n_candidates <= 1:
+            start_rows = [torch.argmin(energy[:, 0]).item()]
+        else:
+            start_rows = torch.linspace(0, H - 1, n_candidates, dtype=torch.long,
+                                        device=energy.device).tolist()
 
-        # Start at column with minimum energy in first column
-        seam[0] = torch.argmin(energy[:, 0])
+        best_seam = None
+        best_energy = float('inf')
 
-        # Greedy selection
-        for j in range(1, W):
-            prev_row = seam[j - 1].item()
+        for start_row in start_rows:
+            seam = torch.zeros(W, dtype=torch.long, device=energy.device)
+            seam[0] = start_row
+            total = energy[start_row, 0].item()
 
-            # Consider neighbors: up, center, down
-            top = max(0, prev_row - 1)
-            bottom = min(H - 1, prev_row + 1)
+            for j in range(1, W):
+                prev_row = seam[j - 1].item()
+                top = max(0, prev_row - 1)
+                bottom = min(H - 1, prev_row + 1)
+                neighbors = energy[top:bottom + 1, j]
+                local_min_idx = torch.argmin(neighbors)
+                seam[j] = top + local_min_idx
+                total += energy[seam[j], j].item()
 
-            neighbors = energy[top:bottom + 1, j]
-            local_min_idx = torch.argmin(neighbors)
-            seam[j] = top + local_min_idx
+            if total < best_energy:
+                best_energy = total
+                best_seam = seam
 
-        return seam
+        return best_seam
 
     else:
         raise ValueError(f"Invalid direction: {direction}")
@@ -152,17 +166,19 @@ def greedy_seam_cyclic(energy: torch.Tensor, col_range: Tuple[int, int],
 
 
 def greedy_seam_windowed(energy: torch.Tensor, col_range: Tuple[int, int],
-                        direction: str = 'vertical') -> torch.Tensor:
+                        direction: str = 'vertical',
+                        n_candidates: int = 1) -> torch.Tensor:
     """
     Find greedy seam constrained to columns [col_start, col_end].
 
-    Same logic as greedy_seam but the seam is restricted to stay within
-    the specified column (or row) range.
+    With n_candidates > 1, tries multiple starting points within the
+    window and returns the lowest total-energy seam.
 
     Args:
         energy: Energy map (H, W)
         col_range: Tuple (start, end) — inclusive column range
         direction: 'vertical' or 'horizontal'
+        n_candidates: Number of starting points to try
 
     Returns:
         Seam indices (same format as greedy_seam)
@@ -175,51 +191,76 @@ def greedy_seam_windowed(energy: torch.Tensor, col_range: Tuple[int, int],
         col_start = max(0, min(col_start, W - 1))
         col_end = max(col_start, min(col_end, W - 1))
     else:
-        # For horizontal, col_range refers to rows
         col_start = max(0, min(col_start, H - 1))
         col_end = max(col_start, min(col_end, H - 1))
 
     if direction == 'vertical':
-        seam = torch.zeros(H, dtype=torch.long, device=energy.device)
+        if n_candidates <= 1:
+            start_cols = [col_start + torch.argmin(energy[0, col_start:col_end + 1]).item()]
+        else:
+            start_cols = torch.linspace(col_start, col_end, n_candidates,
+                                        dtype=torch.long, device=energy.device).tolist()
 
-        # Start at argmin within the window in first row
-        seam[0] = col_start + torch.argmin(energy[0, col_start:col_end + 1])
+        best_seam = None
+        best_energy = float('inf')
 
-        for i in range(1, H):
-            prev_col = seam[i - 1].item()
-            left = max(col_start, prev_col - 1)
-            right = min(col_end, prev_col + 1)
+        for start_col in start_cols:
+            seam = torch.zeros(H, dtype=torch.long, device=energy.device)
+            seam[0] = start_col
+            total = energy[0, start_col].item()
 
-            neighbors = energy[i, left:right + 1]
-            if neighbors.numel() == 0:
-                # Fallback if window is empty (shouldn't happen with validation)
-                seam[i] = col_start
-            else:
-                local_min_idx = torch.argmin(neighbors)
-                seam[i] = left + local_min_idx
+            for i in range(1, H):
+                prev_col = seam[i - 1].item()
+                left = max(col_start, prev_col - 1)
+                right = min(col_end, prev_col + 1)
+                neighbors = energy[i, left:right + 1]
+                if neighbors.numel() == 0:
+                    seam[i] = col_start
+                else:
+                    local_min_idx = torch.argmin(neighbors)
+                    seam[i] = left + local_min_idx
+                total += energy[i, seam[i]].item()
 
-        return seam
+            if total < best_energy:
+                best_energy = total
+                best_seam = seam
+
+        return best_seam
 
     elif direction == 'horizontal':
-        seam = torch.zeros(W, dtype=torch.long, device=energy.device)
-        row_start, row_end = col_start, col_end  # reinterpret for horizontal
+        row_start, row_end = col_start, col_end
 
-        seam[0] = row_start + torch.argmin(energy[row_start:row_end + 1, 0])
+        if n_candidates <= 1:
+            start_rows = [row_start + torch.argmin(energy[row_start:row_end + 1, 0]).item()]
+        else:
+            start_rows = torch.linspace(row_start, row_end, n_candidates,
+                                        dtype=torch.long, device=energy.device).tolist()
 
-        for j in range(1, W):
-            prev_row = seam[j - 1].item()
-            top = max(row_start, prev_row - 1)
-            bottom = min(row_end, prev_row + 1)
+        best_seam = None
+        best_energy = float('inf')
 
-            neighbors = energy[top:bottom + 1, j]
-            if neighbors.numel() == 0:
-                # Fallback if window is empty (shouldn't happen with validation)
-                seam[j] = row_start
-            else:
-                local_min_idx = torch.argmin(neighbors)
-                seam[j] = top + local_min_idx
+        for start_row in start_rows:
+            seam = torch.zeros(W, dtype=torch.long, device=energy.device)
+            seam[0] = start_row
+            total = energy[start_row, 0].item()
 
-        return seam
+            for j in range(1, W):
+                prev_row = seam[j - 1].item()
+                top = max(row_start, prev_row - 1)
+                bottom = min(row_end, prev_row + 1)
+                neighbors = energy[top:bottom + 1, j]
+                if neighbors.numel() == 0:
+                    seam[j] = row_start
+                else:
+                    local_min_idx = torch.argmin(neighbors)
+                    seam[j] = top + local_min_idx
+                total += energy[seam[j], j].item()
+
+            if total < best_energy:
+                best_energy = total
+                best_seam = seam
+
+        return best_seam
 
     else:
         raise ValueError(f"Invalid direction: {direction}")

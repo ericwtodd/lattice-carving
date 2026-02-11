@@ -144,7 +144,7 @@ def figure_arch_carving():
     lat = Lattice2D.from_curve_points(curve_pts, n_lines=H, perp_extent=H / 2)
     lattice_carved = carve_image_lattice_guided(
         image, lat, n_seams=n_seams, lattice_width=W,
-        roi_bounds=(0.0, float(W))
+        roi_bounds=(0.0, float(W)), n_candidates=16
     )
 
     save_comparison(
@@ -214,11 +214,11 @@ def figure_synthetic_bagel_seam_pairs():
 
     shrunk = carve_seam_pairs(image, lat, n_seams=n_seams,
                                roi_range=shrink_roi, pair_range=shrink_pair,
-                               lattice_width=lattice_w)
+                               lattice_width=lattice_w, n_candidates=16)
 
     grown = carve_seam_pairs(image, lat, n_seams=n_seams,
                               roi_range=grow_roi, pair_range=grow_pair,
-                              lattice_width=lattice_w)
+                              lattice_width=lattice_w, n_candidates=16)
 
     save_comparison(
         [tensor_to_numpy(shrunk), tensor_to_numpy(image), tensor_to_numpy(grown)],
@@ -321,7 +321,7 @@ def figure_real_bagel_seam_pairs():
     for n_seams in [3, 8, 15]:
         carved = carve_seam_pairs(image, lat, n_seams=n_seams,
                                    roi_range=shrink_roi, pair_range=shrink_pair,
-                                   lattice_width=lattice_w)
+                                   lattice_width=lattice_w, n_candidates=16)
         results.append(tensor_to_numpy(carved))
         titles.append(f"Shrink {n_seams}")
 
@@ -334,10 +334,10 @@ def figure_real_bagel_seam_pairs():
     # Show grow vs original vs shrink
     grown = carve_seam_pairs(image, lat, n_seams=5,
                               roi_range=grow_roi, pair_range=grow_pair,
-                              lattice_width=lattice_w)
+                              lattice_width=lattice_w, n_candidates=16)
     shrunk = carve_seam_pairs(image, lat, n_seams=5,
                                roi_range=shrink_roi, pair_range=shrink_pair,
-                               lattice_width=lattice_w)
+                               lattice_width=lattice_w, n_candidates=16)
 
     save_comparison(
         [tensor_to_numpy(shrunk), tensor_to_numpy(image), tensor_to_numpy(grown)],
