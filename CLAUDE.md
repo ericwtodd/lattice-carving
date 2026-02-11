@@ -68,11 +68,16 @@ based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
 ## Architecture
 
 - `src/lattice.py` — Lattice2D class: construction, forward/inverse mapping, resampling
+  - `rectangular()` - straight horizontal scanlines
+  - `circular()` - radial scanlines from center
+  - `from_horizontal_curve()` - curved scanlines following a path
 - `src/energy.py` — Energy functions (gradient magnitude, forward energy)
 - `src/seam.py` — Greedy seam computation, seam removal
 - `src/carving.py` — High-level carving orchestration
-- `examples/` — Visual test scripts (not automated)
-- `tests/` — pytest suite (30 tests, all passing)
+  - `carve_image_lattice_guided()` - carving the mapping approach
+  - `carve_seam_pairs()` - local region resizing
+- `examples/debug_lattice_carving.py` — Debug visualization (bagel, river, arch)
+- `tests/` — pytest suite (30 tests, but only check shapes not correctness)
 
 ## Key Algorithmic Notes
 
@@ -82,3 +87,19 @@ based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
   between a radial scanline and its 180° opposite. Already implemented.
 - The lattice forward/inverse mappings are fully vectorized (batched tensor ops),
   replacing earlier O(N*n_lines) Python loops.
+
+## Test Cases for Validation
+
+Three test cases with clear expected behavior:
+
+1. **Bagel (seam pairs)**: Radial lattice, shrink hole while expanding background
+   - Image size unchanged, hole gets smaller, background compensates
+
+2. **River (curved lattice)**: Scanlines follow sinusoidal river path
+   - Seam pairs: shrink river width, expand background
+
+3. **Arch (Figure 3 reference)**: Semicircular arch, curved lattice
+   - Traditional carving: arch squished horizontally (distorted)
+   - Lattice-guided: arch shape preserved
+
+Run: `conda run -n lattice-carving python examples/debug_lattice_carving.py`

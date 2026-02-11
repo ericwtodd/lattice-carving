@@ -257,3 +257,29 @@ For a bagel, the lattice should cover the annular region.
 2. Identify what's broken (lattice structure? interpolation? warping?)
 3. Fix the core issue
 4. Validate with all three test cases
+
+### Simplified Seam Visualization & Added Arch Test Case
+
+**User insight:** Stop guessing and overcomplicating. Use the mapping functions directly!
+
+**Key simplification:**
+- Old approach: Precompute u_map/n_map, interpolate seams, find nearby pixels (convoluted)
+- **New approach**: Directly use `inverse_mapping()` to convert seam from lattice → world space
+  - For each scanline n, seam is at lattice position (u_seam[n], n)
+  - Call `inverse_mapping((u_seam[n], n))` → world (x, y)
+  - Plot those (x, y) points on energy map
+- Much clearer, follows the paper's approach
+
+**Added arch test case (Figure 3 from paper):**
+- Created `create_arch()` - semicircular arch on plain background
+- Created `debug_arch()` - curved lattice following arch shape
+- Applies both traditional and lattice-guided carving
+- Creates side-by-side comparison to validate against Figure 3
+- Clear reference: traditional should squish arch, lattice-guided should preserve it
+
+**Test cases now complete:**
+1. ✅ Bagel - radial lattice, seam pairs (shrink hole, expand background)
+2. ✅ River - curved lattice following sinusoidal path, seam pairs
+3. ✅ Arch - curved lattice following semicircle (Figure 3 reference)
+
+**Philosophy:** Follow the paper's implementation as closely as possible. No unnecessary complexity.
