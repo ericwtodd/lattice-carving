@@ -169,13 +169,8 @@ class Lattice2D:
         norms = torch.sqrt((scanline_tangents ** 2).sum(dim=1, keepdim=True))
         scanline_tangents = scanline_tangents / (norms + 1e-8)
 
-        # IMPORTANT: Offset origins so centerline is at u=perp_extent (middle of scanline)
-        # Instead of origin being on centerline (which makes u=0 to 2*perp_extent asymmetric),
-        # we shift origin back by perp_extent so:
-        #   u=0: one side (centerline - perp_extent * normal)
-        #   u=perp_extent: centerline (middle)
-        #   u=2*perp_extent: other side (centerline + perp_extent * normal)
-        origins = centerline_pts - perp_extent * scanline_tangents
+        # Origins are ON the centerline points (as user specified)
+        origins = centerline_pts
 
         # Spacing between scanlines
         # This is the perpendicular distance between adjacent scanlines
@@ -184,11 +179,14 @@ class Lattice2D:
 
         lattice = cls(origins, scanline_tangents, spacing)
 
-        # Store metadata for recommended lattice_width
-        # For square cells, lattice_width should match: 2*perp_extent / scanline_spacing
+        # Store metadata
         lattice._curve_length = total_length
         lattice._perp_extent = perp_extent
         lattice._recommended_lattice_width = int(2 * perp_extent / scanline_spacing)
+
+        # IMPORTANT: For symmetric coverage, u should be centered
+        # u=0 to u=2*perp_extent, with centerline at u=perp_extent
+        lattice._u_offset = perp_extent  # Subtract this from u in inverse_mapping
 
         return lattice
 
@@ -364,6 +362,10 @@ class Lattice2D:
         """
         u = lattice_points[:, 0]       # (N,)
         n_frac = lattice_points[:, 1]  # (N,)
+
+        # Apply u_offset if present (for centered scanlines)
+        if hasattr(self, '_u_offset'):
+            u = u - self._u_offset
 
         n = torch.floor(n_frac).long()
         frac = n_frac - n.float()
