@@ -471,8 +471,8 @@ def debug_river():
     # For river, use curved lattice from centerline points (Figure 9 approach)
     print("\n2. Creating lattice from river centerline points (Figure 9)...")
     n_samples = 100
-    x_samples = torch.linspace(0, W, n_samples, device=device)
-    y_samples = torch.tensor([river_centerline(x.item()) for x in x_samples], device=device)
+    x_samples = torch.linspace(0, W, n_samples, device=device, dtype=torch.float32)
+    y_samples = torch.tensor([river_centerline(x.item()) for x in x_samples], device=device, dtype=torch.float32)
     curve_points = torch.stack([x_samples, y_samples], dim=1)
 
     perp_extent = H / 3  # Extend perpendicular to river
@@ -645,8 +645,8 @@ def debug_arch():
     x_min = roi_x_min - 20  # Small padding
     x_max = roi_x_max + 20
     n_samples = 100
-    x_samples = torch.linspace(x_min, x_max, n_samples, device=device)
-    y_samples = torch.tensor([arch_centerline(x.item()) for x in x_samples], device=device)
+    x_samples = torch.linspace(x_min, x_max, n_samples, device=device, dtype=torch.float32)
+    y_samples = torch.tensor([arch_centerline(x.item()) for x in x_samples], device=device, dtype=torch.float32)
     curve_points = torch.stack([x_samples, y_samples], dim=1)
 
     perp_extent = (roi_y_max - roi_y_min) / 2 + 20  # Cover ROI height + padding
