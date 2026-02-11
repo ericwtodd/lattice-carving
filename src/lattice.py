@@ -80,6 +80,66 @@ class Lattice2D:
         return cls(origins, tangents, spacing)
 
     @classmethod
+    def from_curve_points(cls, curve_points: torch.Tensor, n_lines: int,
+                         perp_extent: float, device='cpu'):
+        """
+        Create a lattice from a list of centerline points (Figure 9 approach).
+
+        This is the paper's approach: take a sequence of (x, y) points defining
+        a curve, compute tangents, build perpendicular scanlines.
+
+        Args:
+            curve_points: (N, 2) tensor of (x, y) points defining centerline
+            n_lines: Number of scanlines perpendicular to curve
+            perp_extent: Distance to extend perpendicular to curve (both sides)
+            device: torch device
+
+        Returns:
+            Lattice with scanlines perpendicular to the curve
+        """
+        N = curve_points.shape[0]
+
+        # Compute tangents by finite differences
+        tangents = torch.zeros_like(curve_points)
+        tangents[0] = curve_points[1] - curve_points[0]  # Forward diff at start
+        tangents[-1] = curve_points[-1] - curve_points[-2]  # Backward diff at end
+        tangents[1:-1] = (curve_points[2:] - curve_points[:-2]) / 2  # Central diff
+
+        # Normalize tangents
+        tangent_norms = torch.sqrt((tangents ** 2).sum(dim=1, keepdim=True))
+        tangents = tangents / (tangent_norms + 1e-8)
+
+        # Compute normals (perpendicular, pointing "left" of curve)
+        normals = torch.stack([-tangents[:, 1], tangents[:, 0]], dim=1)
+
+        # Sample n_lines points along the curve
+        if n_lines > N:
+            # Interpolate to get more points
+            indices = torch.linspace(0, N - 1, n_lines, device=device)
+            indices_floor = torch.floor(indices).long()
+            indices_ceil = torch.ceil(indices).long().clamp(max=N - 1)
+            frac = indices - indices_floor.float()
+
+            origins = (1 - frac).unsqueeze(1) * curve_points[indices_floor] + \
+                     frac.unsqueeze(1) * curve_points[indices_ceil]
+            scanline_tangents = (1 - frac).unsqueeze(1) * normals[indices_floor] + \
+                               frac.unsqueeze(1) * normals[indices_ceil]
+        else:
+            # Subsample the curve
+            indices = torch.linspace(0, N - 1, n_lines, device=device).long()
+            origins = curve_points[indices]
+            scanline_tangents = normals[indices]
+
+        # Normalize tangents again after interpolation
+        norms = torch.sqrt((scanline_tangents ** 2).sum(dim=1, keepdim=True))
+        scanline_tangents = scanline_tangents / (norms + 1e-8)
+
+        # Spacing between scanlines (arc length approximation)
+        spacing = torch.ones(n_lines, device=device) * (2 * perp_extent / n_lines)
+
+        return cls(origins, scanline_tangents, spacing)
+
+    @classmethod
     def from_horizontal_curve(cls, y_fn, x_range: Tuple[float, float],
                               n_lines: int, perp_extent: float, device='cpu'):
         """

@@ -468,18 +468,23 @@ def debug_river():
         x_norm = 2 * x / W - 1
         return river_center_y + amplitude * np.sin(frequency * x_norm)
 
-    # For river, use CURVED lattice following the river path
-    print("\n2. Creating COARSE curved lattice following river...")
-    perp_extent = H / 3  # Extend 1/3 of image height perpendicular to river
-    n_lines = 24  # COARSE lattice (not 128!)
+    # For river, use curved lattice from centerline points (Figure 9 approach)
+    print("\n2. Creating lattice from river centerline points (Figure 9)...")
+    n_samples = 100
+    x_samples = torch.linspace(0, W, n_samples, device=device)
+    y_samples = torch.tensor([river_centerline(x.item()) for x in x_samples], device=device)
+    curve_points = torch.stack([x_samples, y_samples], dim=1)
 
-    lattice = Lattice2D.from_horizontal_curve(
-        y_fn=river_centerline,
-        x_range=(0, W),
+    perp_extent = H / 3  # Extend perpendicular to river
+    n_lines = 24  # COARSE lattice
+
+    lattice = Lattice2D.from_curve_points(
+        curve_points=curve_points,
         n_lines=n_lines,
         perp_extent=perp_extent,
         device=device
     )
+    print(f"   Sampled {n_samples} points along river centerline")
     print(f"   Number of scanlines: {lattice.n_lines} (coarse, like paper)")
     print(f"   Perpendicular extent: ±{perp_extent:.1f} pixels from centerline")
 
@@ -635,22 +640,27 @@ def debug_arch():
         roi_y_min, roi_y_max = base_y - radius, base_y
         print(f"   Using fallback ROI from arch parameters")
 
-    print("\n3. Creating COARSE curved lattice covering ROI...")
+    print("\n3. Creating lattice from arch centerline points (Figure 9 approach)...")
+    # Sample points along the arch centerline
     x_min = roi_x_min - 20  # Small padding
     x_max = roi_x_max + 20
-    perp_extent = (roi_y_max - roi_y_min) / 2 + 20  # Cover ROI height + padding
-    n_lines = 24  # COARSE lattice like in paper (not 128!)
+    n_samples = 100
+    x_samples = torch.linspace(x_min, x_max, n_samples, device=device)
+    y_samples = torch.tensor([arch_centerline(x.item()) for x in x_samples], device=device)
+    curve_points = torch.stack([x_samples, y_samples], dim=1)
 
-    lattice = Lattice2D.from_horizontal_curve(
-        y_fn=arch_centerline,
-        x_range=(x_min, x_max),
+    perp_extent = (roi_y_max - roi_y_min) / 2 + 20  # Cover ROI height + padding
+    n_lines = 24  # COARSE lattice like in paper
+
+    lattice = Lattice2D.from_curve_points(
+        curve_points=curve_points,
         n_lines=n_lines,
         perp_extent=perp_extent,
         device=device
     )
+    print(f"   Sampled {n_samples} points along arch centerline")
     print(f"   Number of scanlines: {lattice.n_lines} (coarse, like paper)")
     print(f"   Perpendicular extent: ±{perp_extent:.1f} pixels from arch")
-    print(f"   Lattice x-range: [{x_min:.1f}, {x_max:.1f}]")
 
     # Compute energy
     print("\n4. Computing energy...")
