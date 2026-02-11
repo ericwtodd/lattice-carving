@@ -135,9 +135,10 @@ lattice-carving/
 - **Files**: `examples/generate_visualization.py`, `demo_data/*.json`
 
 **Task 4.2: Build browser demo**
-- Static HTML/CSS/JS that loads pre-computed JSON
-- Layout follows existing `PLAN_visualization.md` spec
-- Controls: image selector, seam count slider, mode toggle, lattice detail panel
+- Static HTML/CSS/JS that loads pre-computed JSON, no server needed
+- Layout: original + seam overlay | carved result, with seam count slider
+- Controls: image selector, seam count slider, mode toggle (standard vs pairs)
+- Toggleable lattice detail panel: unrolled lattice image, energy heatmap, seam overlay
 - Canvas overlay for seam/lattice drawing on original image
 - **Files**: `web/index.html`, `web/app.js`, `web/style.css`
 
