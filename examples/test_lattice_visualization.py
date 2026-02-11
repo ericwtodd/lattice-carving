@@ -199,15 +199,17 @@ def test_bagel():
     y = center[1] + middle_radius * torch.sin(angles)
     curve_points = torch.stack([x, y], dim=1)
 
-    # Build lattice
+    # Build lattice (CYCLIC for closed curve)
     lattice = Lattice2D.from_curve_points(
         curve_points=curve_points,
         n_lines=32,
         perp_extent=60,  # Cover hole to outer edge
+        cyclic=True,  # Connect last scanline to first (Section 3.5)
         device=device
     )
 
     print(f"   Scanlines: {lattice.n_lines}")
+    print(f"   Cyclic: {lattice._cyclic} (closed curve)")
     print(f"   Recommended lattice_width: {lattice._recommended_lattice_width}")
 
     visualize_lattice_grid(curve_points, lattice, "Bagel", "lattice_bagel.png")

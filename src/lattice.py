@@ -81,7 +81,7 @@ class Lattice2D:
 
     @classmethod
     def from_curve_points(cls, curve_points: torch.Tensor, n_lines: int,
-                         perp_extent: float, device='cpu'):
+                         perp_extent: float, cyclic: bool = False, device='cpu'):
         """
         Create a lattice from a list of centerline points (Figure 9 approach).
 
@@ -96,6 +96,7 @@ class Lattice2D:
             curve_points: (N, 2) tensor of (x, y) points defining centerline
             n_lines: Number of scanlines perpendicular to curve
             perp_extent: Distance to extend perpendicular to curve (both sides)
+            cyclic: If True, connects last scanline back to first (for closed curves)
             device: torch device
 
         Returns:
@@ -187,6 +188,9 @@ class Lattice2D:
         # IMPORTANT: For symmetric coverage, u should be centered
         # u=0 to u=2*perp_extent, with centerline at u=perp_extent
         lattice._u_offset = perp_extent  # Subtract this from u in inverse_mapping
+
+        # Cyclic lattice (Section 3.5): last scanline connects to first
+        lattice._cyclic = cyclic
 
         return lattice
 
@@ -374,9 +378,15 @@ class Lattice2D:
         n = torch.floor(n_frac).long()
         frac = n_frac - n.float()
 
-        # Clamp to valid range
-        n = torch.clamp(n, 0, self.n_lines - 1)
-        n_next = torch.clamp(n + 1, 0, self.n_lines - 1)
+        # Handle cyclic wrapping or clamping
+        if hasattr(self, '_cyclic') and self._cyclic:
+            # Cyclic: wrap around (n=n_lines maps to n=0)
+            n = n % self.n_lines
+            n_next = (n + 1) % self.n_lines
+        else:
+            # Non-cyclic: clamp to valid range
+            n = torch.clamp(n, 0, self.n_lines - 1)
+            n_next = torch.clamp(n + 1, 0, self.n_lines - 1)
 
         # Gather origins and tangents for scanline n and n+1
         o_n = self.origins[n]          # (N, 2)
