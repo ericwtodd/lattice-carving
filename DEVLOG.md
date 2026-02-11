@@ -1,5 +1,98 @@
 # Development Log
 
+## 2026-02-11 - Seam Pairs Understanding & Visualization
+
+### Deep Dive into Section 3.6 (Seam Pairs)
+
+**Read and analyzed** paper sections 3.5.1 (Cyclic Graph-Cut Seams) and 3.6 (Seam Pairs).
+
+**Key Understanding:**
+- **Seam pairs** enable local region resizing without changing global image boundaries
+- **Two user-defined windows** in lattice u-coordinates (non-overlapping):
+  - **ROI window**: Region being retargeted (feature to grow/shrink)
+  - **Pair window**: Compensating region (usually background)
+- **To DECREASE ROI size**: Remove seam from ROI (+1 shift), add seam to pair (-1 shift)
+- **To INCREASE ROI size**: Reverse the shifts
+- **Net effect**: Shifts cancel at boundaries → global dimensions unchanged
+
+**Window Specification:**
+- Paper says "user-defined windows" but doesn't detail the interface
+- Likely using Houdini masks/VDB tools to define regions
+- **Our approach**: Start with manual u-coordinate ranges, plan for segmentation-based UI later
+
+**Clarified Relationship:**
+- **Centerline points** (R): Define lattice path (n-direction)
+- **Windows**: Define perpendicular regions (u-direction)
+- These are orthogonal - no conflict!
+
+### Implemented Cyclic Lattice Visualization Fix
+
+**Problem**: Bagel lattice visualization showed a gap instead of continuous loop
+
+**Root Cause**: When drawing lattice grid for cyclic lattices:
+- Cross-scanline lines went from `n=0` to `n=n_lines-1`
+- For cyclic, should go to `n=n_lines` to show wrap-around
+
+**Fix**:
+- Check `lattice._cyclic` flag
+- If cyclic, extend n_vals to `n_lines` instead of `n_lines-1`
+- Also fix seam visualization to wrap around properly
+- Applies to both `visualize_lattice_grid` and `visualize_seams`
+
+**Result**: Bagel lattice now displays as continuous closed loop ✓
+
+### Updated Test Cases with Proper Seam Pair Windows
+
+**Approach**:
+1. Lattice `perp_extent` large enough to cover feature + background
+2. ROI window: Inside feature (area to resize)
+3. Pair window: Outside feature in background (compensating region)
+
+**Updated test cases:**
+
+**Arch** (grow arch outward):
+- perp_extent: 80 (lattice_width=160)
+- Arch band_width: 40px
+- ROI window: (90, 110) - outer part of arch
+- Pair window: (115, 140) - background beyond arch
+
+**River** (shrink river):
+- perp_extent: 120 (lattice_width=240)
+- River band_width: 60px
+- ROI window: (100, 140) - river itself
+- Pair window: (160, 200) - background to one side
+
+**Bagel** (grow bagel outward):
+- perp_extent: 50 (lattice_width=100)
+- Bagel: inner_radius=50, outer_radius=110, centerline=80
+- ROI window: (65, 80) - outer part of bagel (radius 95-110)
+- Pair window: (85, 95) - background beyond bagel (radius 115-125)
+
+### Improved Visualization
+
+**Added window boundary markers**:
+- Yellow dashed lines: ROI window boundaries
+- Orange dashed lines: Pair window boundaries
+- Makes it clear where each seam should be constrained
+
+**Three-panel visualization**:
+1. Original image + centerline
+2. Image + lattice grid + window boundaries
+3. Image + seam pair + window boundaries
+
+### Documentation Updates
+
+**IMPLEMENTATION_STATUS.md**:
+- Updated seam pairs section with paper understanding
+- Marked cyclic lattices as implemented (basic support)
+- Updated visualization phases and next steps
+
+**Next Steps**:
+1. Validate seam visualization (check seam placement)
+2. Apply actual carving with `carve_seam_pairs()`
+3. Verify before/after results
+4. Plan better window specification UI (segmentation-based)
+
 ## 2026-02-10 - Project Initialization
 
 ### Session Start

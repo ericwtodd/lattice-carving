@@ -96,7 +96,16 @@ def greedy_seam_windowed(energy: torch.Tensor, col_range: Tuple[int, int],
         Seam indices (same format as greedy_seam)
     """
     H, W = energy.shape
-    col_start, col_end = col_range
+    col_start, col_end = int(col_range[0]), int(col_range[1])
+
+    # Validate window bounds
+    if direction == 'vertical':
+        col_start = max(0, min(col_start, W - 1))
+        col_end = max(col_start, min(col_end, W - 1))
+    else:
+        # For horizontal, col_range refers to rows
+        col_start = max(0, min(col_start, H - 1))
+        col_end = max(col_start, min(col_end, H - 1))
 
     if direction == 'vertical':
         seam = torch.zeros(H, dtype=torch.long, device=energy.device)
@@ -110,8 +119,12 @@ def greedy_seam_windowed(energy: torch.Tensor, col_range: Tuple[int, int],
             right = min(col_end, prev_col + 1)
 
             neighbors = energy[i, left:right + 1]
-            local_min_idx = torch.argmin(neighbors)
-            seam[i] = left + local_min_idx
+            if neighbors.numel() == 0:
+                # Fallback if window is empty (shouldn't happen with validation)
+                seam[i] = col_start
+            else:
+                local_min_idx = torch.argmin(neighbors)
+                seam[i] = left + local_min_idx
 
         return seam
 
@@ -127,8 +140,12 @@ def greedy_seam_windowed(energy: torch.Tensor, col_range: Tuple[int, int],
             bottom = min(row_end, prev_row + 1)
 
             neighbors = energy[top:bottom + 1, j]
-            local_min_idx = torch.argmin(neighbors)
-            seam[j] = top + local_min_idx
+            if neighbors.numel() == 0:
+                # Fallback if window is empty (shouldn't happen with validation)
+                seam[j] = row_start
+            else:
+                local_min_idx = torch.argmin(neighbors)
+                seam[j] = top + local_min_idx
 
         return seam
 

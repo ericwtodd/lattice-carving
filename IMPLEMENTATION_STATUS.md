@@ -42,13 +42,25 @@ Tracking implementation of "Generalized Fluid Carving with Fast Lattice-Guided S
 - [x] Combined shifts (ROI: +1, pair: -1)
 - [x] Local region resizing without changing global boundaries
 - [x] **Fixed cumulative shift accumulation**
-- Status: **Implemented but needs testing with proper lattices**
+- [x] **Understanding from paper**:
+  - Two user-defined windows in lattice u-coordinates (non-overlapping)
+  - First window: Region being retargeted (ROI)
+  - Pair window: Compensating region (typically background, in "positive direction" of ROI)
+  - To DECREASE ROI: remove seam from ROI, add seam to pair
+  - To INCREASE ROI: add seam to ROI, remove seam from pair
+  - Net effect: shifts cancel at boundaries, global dimensions unchanged
+- [x] **Window specification approach**:
+  - Currently: Manual u-coordinate ranges (for testing)
+  - Paper approach: "User-defined windows" (details not specified, likely Houdini masks)
+  - Future: Segmentation-based (SAM) or multi-curve specification
+- Status: **Core algorithm ready, testing with proper window setups**
 
-#### ⏳ Cyclic Lattices (Section 3.5)
-- [ ] Connect last scanline back to first
-- [ ] Cyclic greedy with inverted Gaussian energy guide
-- [ ] For closed shapes (rings, tubes)
-- Status: **Not started - lower priority**
+#### ✅ Cyclic Lattices (Section 3.5)
+- [x] Connect last scanline back to first (implemented)
+- [x] Cyclic interpolation in forward/inverse mapping
+- [x] Visualization shows wrap-around for cyclic lattices
+- [ ] Cyclic greedy with inverted Gaussian energy guide (Section 3.5.1)
+- Status: **Basic cyclic support working, advanced cyclic seams not yet implemented**
 
 ### Resampling & Interpolation (Section 3.3)
 
@@ -89,26 +101,30 @@ Tracking implementation of "Generalized Fluid Carving with Fast Lattice-Guided S
 
 ## Visualization & Testing Goals
 
-### ✅ Phase 1: Lattice Construction (CURRENT)
+### ✅ Phase 1: Lattice Construction (COMPLETE)
 - [x] Visualize lattice structure (scanlines, grid)
 - [x] Test on simple curves (sine, arc)
 - [x] Test on paper examples (arch, river, bagel)
 - [x] Verify symmetric coverage
 - [x] Verify origins aligned with centerline
-- **Next: Run final validation tests**
+- [x] Cyclic lattice support for closed curves
+- [x] Proper visualization of cyclic wrap-around
 
-### ⏳ Phase 2: Basic Carving
-- [ ] Visualize seams in lattice space
-- [ ] Visualize seams in world space (mapped back)
+### ⏳ Phase 2: Seam Visualization (CURRENT)
+- [x] Visualize seams in lattice space (via windows)
+- [x] Visualize seams in world space (mapped back via inverse_mapping)
+- [x] Visualize seam pairs with ROI and pair regions marked
+- [x] Window boundaries shown in visualization (yellow/orange dashed lines)
+- [x] Cyclic seam visualization (wraps around for bagel)
+- [ ] Validate seams make sense (currently testing)
+- **Status**: Can see seams and windows, validating placement
+
+### ⏳ Phase 3: Actual Carving
+- [ ] Apply carving with seam pairs
 - [ ] Show before/after carving comparison
 - [ ] Validate no blur (single interpolation check)
-- [ ] Test cases: arch (Figure 3), river, bagel
-
-### ⏳ Phase 3: Seam Pairs
-- [ ] Visualize ROI and pair regions
-- [ ] Show seam pairs overlayed on image
-- [ ] Demonstrate local resizing (bagel hole shrink)
-- [ ] Verify image size unchanged
+- [ ] Test cases: arch (grow/shrink), river (shrink), bagel (grow)
+- [ ] Verify image size unchanged with seam pairs
 
 ### ⏳ Phase 4: Interactive Demo
 - [ ] User clicks points to define curve
@@ -142,30 +158,35 @@ Tracking implementation of "Generalized Fluid Carving with Fast Lattice-Guided S
 
 ## Next Steps (Priority Order)
 
-1. **Validate lattice construction** (Phase 1 finale)
-   - Run `test_lattice_visualization.py`
-   - Verify sine, arch, river, bagel all look correct
-   - Check grid is symmetric and properly centered
+1. **Validate seam visualization** (Phase 2 - CURRENT)
+   - Run updated `test_lattice_visualization.py`
+   - Check that seams are in correct regions (ROI vs pair)
+   - Verify window boundaries make sense
+   - Ensure cyclic seams wrap properly for bagel
 
-2. **Add carving to visualizations** (Phase 2 start)
-   - Apply lattice-guided carving to test cases
+2. **Apply actual carving** (Phase 3 start)
+   - Use `carve_seam_pairs()` function
+   - Apply to arch (grow), river (shrink), bagel (grow)
    - Show before/after comparisons
-   - Verify no blur, shapes preserved
+   - Verify no blur (single interpolation)
+   - Verify image dimensions unchanged
 
-3. **Test seam pairs** (Phase 3)
-   - Bagel: shrink hole, expand background
-   - River: shrink river, expand background
-   - Verify image size unchanged
+3. **Improve window specification** (UX improvement)
+   - Current: Manual u-coordinate ranges
+   - Option 1: Multiple curves (inner/outer boundaries)
+   - Option 2: Segmentation-based (SAM integration)
+   - Option 3: Paint-based masks
 
 4. **ROI-bounded lattices** (Efficiency)
    - Lattice only covers region of interest
    - Pixels outside lattice unchanged
-   - Cleaner, faster, matches paper
+   - Cleaner, faster, matches paper better
 
 5. **Interactive demo** (Phase 4)
    - User defines curves by clicking
    - Real-time lattice visualization
    - Interactive seam pair selection
+   - Segmentation-based window definition
 
 ---
 
