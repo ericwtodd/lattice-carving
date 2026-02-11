@@ -14,7 +14,7 @@ Traditional seam carving only works on rectangular images — seams must flow mo
 | 3.4.2 | Lattice smoothing (iterative mean filter) | `src/lattice.py` |
 | 3.5 | Cyclic lattices for closed curves | `src/lattice.py` |
 | 3.6 | Seam pairs (local shrink/expand without changing boundaries) | `src/carving.py` |
-| 4.0.1 | Greedy seam computation with Gaussian guide for cyclic closure | `src/seam.py` |
+| 4.0.1 | Greedy + multi-greedy seam computation, Gaussian guide for cyclic closure | `src/seam.py` |
 | Eq. 6 | Gradient magnitude energy (L1 norm) | `src/energy.py` |
 | Rubinstein 2008 | Forward energy (edge-aware DP) | `src/energy.py` |
 
@@ -61,9 +61,19 @@ src/
   energy.py     # gradient_magnitude_energy, forward_energy, normalize_energy
   seam.py       # greedy_seam, windowed, cyclic, multi-greedy, remove_seam
   carving.py    # High-level carving orchestration
-tests/          # 55 tests across 5 modules
+tests/          # 68 tests across 5 modules
 examples/       # Visualization and test image generation scripts
 ```
+
+## Visual Validation
+
+Run `python examples/reproduce_figures.py` to generate comparison images in `output/`:
+
+- **Traditional carving** — seams avoid high-energy edges
+- **Arch carving** (Figure 3) — lattice-guided preserves arch shape vs. traditional distortion
+- **No-blur comparison** (Section 3.3) — carving-the-mapping preserves sharpness vs. naive double-interpolation
+- **Synthetic bagel seam pairs** (Figure 10) — shrink/grow ring body with cyclic lattice
+- **Real double-bagel seam pairs** — shrink/grow left bagel half independently
 
 ## References
 

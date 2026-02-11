@@ -4,7 +4,7 @@
 
 We're implementing "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation" (Flynn et al., 2021) in Python/JS. The Python implementation exists but progress has been slow because tasks weren't small enough and tests don't validate correctness well. The goal is: (1) a faithful Python implementation of the paper's pipeline, (2) solid tests for each component, (3) an interactive browser demo.
 
-**Current state**: Lattice construction is solid (vectorized mappings, arc-length resampling, cyclic support). Carving algorithms exist but are **untested on real images** — no one has verified the output looks correct. ~40% of tests only check tensor shapes. Missing: lattice smoothing (Section 3.4.2), energy normalization, ROI-bounded carving, forward energy.
+**Current state (updated 2026-02-11 evening)**: Phases 0–3 are COMPLETE. All paper algorithms are implemented and tested (68 tests). Visual validation via `reproduce_figures.py` confirms: traditional carving works, no-blur approach preserves sharpness, cyclic lattice mapping is correct. **Main open issue**: sawtooth artifacts on bagel seam pairs due to greedy seam wandering in flat-energy regions — DP seam finding is the fix. Browser demo (Phase 4) is not started.
 
 ---
 
@@ -54,77 +54,57 @@ lattice-carving/
 
 ### Phase 1: Algorithmic Faithfulness (Paper Pipeline)
 
-**Task 1.1: Lattice smoothing (Section 3.4.2, Figure 9)** — HIGH PRIORITY
-- Add `Lattice2D.smooth(max_iterations=50)` method
-- Algorithm: iterative mean filter on origins in the u/v directions (NOT w/normal direction), aligning each scanline with its neighbors
-- Detect overlapping planes: check if adjacent scanlines' perpendicular ranges intersect in world space
-- Stop when no overlaps or max iterations reached
-- **Test**: Jagged zigzag curve → after smoothing, no overlapping scanlines. Smoothed curve still approximates original (max deviation bounded).
-- **Files**: `src/lattice.py`, `tests/test_smoothing.py`
+**Task 1.1: Lattice smoothing (Section 3.4.2, Figure 9)** ✅ DONE
+- `Lattice2D.smooth(max_iterations=50)` — iterative mean filter on origins
+- Overlap detection, convergence stopping, shape preservation
+- 7 tests in `tests/test_smoothing.py`
 
-**Task 1.2: Energy normalization (paper page 10)** — HIGH PRIORITY
-- Paper: "we also remap our energy functions to always be between 0 and 1"
-- Add normalization step: `energy = (energy - min) / (max - min + eps)`
-- Apply consistently in carving pipeline (in `carve_image_lattice_guided` and `carve_seam_pairs`)
-- **Test**: After normalization, min≈0.0 and max≈1.0. Seam positions unchanged (monotonic transform). All existing tests pass.
-- **Files**: `src/energy.py`, `src/carving.py`
+**Task 1.2: Energy normalization (paper page 10)** ✅ DONE
+- `normalize_energy()` in `energy.py`, applied in all carving pipelines
+- 4 tests in `tests/test_energy.py`
 
-**Task 1.3: ROI-bounded carving** — HIGH PRIORITY
-- Currently warp applies to entire image. Paper figures show lattice covering only ROI.
-- Add validity mask: only pixels whose forward mapping falls within lattice bounds get warped
-- Pixels outside lattice region stay unchanged: `result = where(valid, warped, original)`
-- **Test**: Create lattice covering center of image. After carving, border pixels identical to original. Interior pixels modified.
-- **Files**: `src/carving.py`
+**Task 1.3: ROI-bounded carving** ✅ DONE
+- `roi_bounds` parameter + validity masking in `carve_image_lattice_guided()`
+- 3 tests in `tests/test_carving.py`
 
-**Task 1.4: Forward energy (Rubinstein 2008)** — MEDIUM PRIORITY
-- Replace stub with actual implementation
-- Forward energy considers cost of new edges introduced by seam removal
-- Three transition costs (left/center/right) based on neighboring pixel differences
-- **Test**: Uniform image → zero energy. Vertical edge → correct penalty for edge-crossing seams.
-- **Files**: `src/energy.py`, `tests/test_energy.py`
+**Task 1.4: Forward energy (Rubinstein 2008)** ✅ DONE
+- Three-cost DP (left/center/right transitions) in `energy.py`
+- 4 tests in `tests/test_energy.py`
 
-**Task 1.5: Validate seam pair mechanics (Section 3.6, Figure 10)**
-- Verify the +1/-1 shift logic is correct: ROI shrinks, pair expands
-- Verify net displacement is zero outside both windows
-- Verify pair window is in "positive direction" of ROI
-- **Test**: After seam pairs on simple striped image, measure actual pixel displacement at boundaries.
-- **Files**: `tests/test_carving.py`
+**Task 1.5: Validate seam pair mechanics (Section 3.6, Figure 10)** ✅ DONE
+- 5 tests verifying boundary preservation, ROI changes, dimension preservation, shift cancellation
+- Tests in `tests/test_carving.py`
 
-### Phase 2: Visual Validation (Reproduce Paper Figures)
+### Phase 2: Visual Validation (Reproduce Paper Figures) ✅ DONE
 
-**Task 2.1: Reproduce Figure 3 — traditional vs. lattice-guided**
-- Arch image: traditional carving distorts silhouette, lattice-guided preserves it
-- Shows the core value proposition of the method
-- **Test**: After lattice-guided carving, arch remains approximately semicircular (measure radial variance).
-- **Files**: `examples/reproduce_figures.py`
+**Task 2.1: Reproduce Figure 3 — traditional vs. lattice-guided** ✅ DONE
+- `figure_arch_carving()` in `reproduce_figures.py`
+- Shows arch preservation with lattice-guided vs. traditional distortion
+- Output: `output/fig_arch_carving.png`
 
-**Task 2.2: Reproduce Figure 6 — naive vs. correct (no-blur)**
-- Show naive double-interpolation causes blur; carving-the-mapping doesn't
-- Use a detailed image with a curved lattice, carve 10+ seams
-- **Test**: Correct approach has higher Laplacian variance (sharpness) than naive approach.
-- **Files**: `examples/reproduce_figures.py`
+**Task 2.2: Reproduce Figure 6 — naive vs. correct (no-blur)** ✅ DONE
+- `figure_no_blur_comparison()` in `reproduce_figures.py`
+- Checkerboard with curved lattice, correct approach preserves sharpness
+- Output: `output/fig_no_blur_comparison.png`
 
-**Task 2.3: Reproduce Figure 10/22 — seam pairs**
-- Show seam pairs on bagel: hole shrinks, boundary unchanged
-- This is the primary end-to-end validation
-- **Test**: After seam pairs, image dimensions unchanged, boundary pixels identical, ROI visibly different.
-- **Files**: `examples/reproduce_figures.py`
+**Task 2.3: Reproduce Figure 10/22 — seam pairs** ✅ DONE (with known artifact issue)
+- `figure_synthetic_bagel_seam_pairs()` and `figure_real_bagel_seam_pairs()`
+- Synthetic bagel: shrink/grow ring body with cyclic lattice
+- Real double-bagel: shrink/grow left bagel half
+- **Finding**: Sawtooth artifacts from greedy seam wandering in flat energy. Multi-greedy (n_candidates=16) does not fix. DP seam finding needed.
+- Output: `output/fig_synthetic_bagel_pairs.png`, `output/fig_real_bagel_*.png`
 
-### Phase 3: Correctness Tests
+### Phase 3: Correctness Tests ✅ DONE
 
-**Task 3.1: Write carving correctness tests**
-- **Circle preservation**: Ring image + circular lattice → ring stays circular after N seams
-- **No-blur**: Laplacian variance of correct approach ≥ naive approach
-- **Boundary fixedness**: Pixels far from both windows unchanged after seam pairs
-- **Content shift direction**: After removing seam at column K, pixels at K+ shift left by 1
-- **Cumulative shift values**: After N seams, shifts are integers in [0, N]
-- **Files**: `tests/test_carving.py`
+**Task 3.1: Write carving correctness tests** ✅ DONE
+- 18 tests in `tests/test_carving.py`
+- Covers: width reduction, seam avoidance, rectangular equivalence, no-blur vs naive,
+  monotonicity, ROI bounds (exact equality outside, modification inside), seam pairs
+  (boundary preservation, ROI changes, dimension preservation, shift cancellation)
 
-**Task 3.2: Write smoothing and energy tests**
-- Smoothing convergence, overlap detection, shape preservation
-- Forward energy penalizes edge-crossing more than gradient magnitude
-- Energy normalization to [0, 1]
-- **Files**: `tests/test_smoothing.py`, `tests/test_energy.py`
+**Task 3.2: Write smoothing and energy tests** ✅ DONE
+- 7 smoothing tests, 14 energy tests
+- All in `tests/test_smoothing.py` and `tests/test_energy.py`
 
 ### Phase 4: Browser Demo
 
@@ -163,26 +143,28 @@ lattice-carving/
 ```
 Phase 0: Task 0.1 (fix imports/split tests) ✅
     │
-    ├── Phase 1 (all tasks can run in parallel):
-    │   ├── Task 1.1 (lattice smoothing)
-    │   ├── Task 1.2 (energy normalization)
-    │   ├── Task 1.3 (ROI-bounded carving)
-    │   ├── Task 1.4 (forward energy)
-    │   └── Task 1.5 (seam pair validation)
+    ├── Phase 1 (algorithmic faithfulness) ✅ ALL DONE
+    │   ├── Task 1.1 (lattice smoothing) ✅
+    │   ├── Task 1.2 (energy normalization) ✅
+    │   ├── Task 1.3 (ROI-bounded carving) ✅
+    │   ├── Task 1.4 (forward energy) ✅
+    │   └── Task 1.5 (seam pair validation) ✅
     │
-    ├── Phase 2 (after Phase 1):
-    │   ├── Task 2.1 (Figure 3)
-    │   ├── Task 2.2 (Figure 6)
-    │   └── Task 2.3 (Figure 10/22)
+    ├── Phase 2 (visual validation) ✅ ALL DONE
+    │   ├── Task 2.1 (Figure 3: arch) ✅
+    │   ├── Task 2.2 (Figure 6: no-blur) ✅
+    │   └── Task 2.3 (Figure 10/22: seam pairs) ✅ (sawtooth artifacts noted)
     │
-    ├── Phase 3 (after Phase 1):
-    │   ├── Task 3.1 (carving tests)
-    │   └── Task 3.2 (smoothing/energy tests)
+    ├── Phase 3 (correctness tests) ✅ ALL DONE
+    │   ├── Task 3.1 (carving tests: 18 tests) ✅
+    │   └── Task 3.2 (smoothing/energy tests) ✅
     │
-    └── Phase 4 (after Phase 2):
+    ├── Phase 3.5 (quality improvement) ← CURRENT
+    │   ├── Multi-greedy (n_candidates) ✅ Implemented, doesn't fix flat-energy wandering
+    │   └── DP seam finding ❌ TODO — needed for artifact-free bagel results
+    │
+    └── Phase 4 (browser demo) ❌ NOT STARTED
         ├── Task 4.1 (generate data) → Task 4.2 (browser demo) → Task 4.3 (interactive)
-
-Phase 4.2 (HTML/CSS layout) can start in parallel with everything.
 ```
 
 ---
@@ -191,18 +173,20 @@ Phase 4.2 (HTML/CSS layout) can start in parallel with everything.
 
 | Paper Reference | What | Status | Our Code |
 |----------------|------|--------|----------|
-| Eq. 6: E_I = \|∂I/∂x\| + \|∂I/∂y\| | L1 gradient magnitude | ✅ Done | `energy.py:14` |
-| Eq. 4-5: p_w* = g*(f(p_w)) | Carve the mapping | ✅ Done | `carving.py` |
-| Sec 3.3: Sample original once | No double interpolation | ✅ Done | `carving.py:255` |
+| Eq. 6: E_I = \|∂I/∂x\| + \|∂I/∂y\| | L1 gradient magnitude | ✅ Done | `energy.py:gradient_magnitude_energy()` |
+| Eq. 4-5: p_w* = g*(f(p_w)) | Carve the mapping | ✅ Done | `carving.py:carve_image_lattice_guided()` |
+| Sec 3.3: Sample original once | No double interpolation | ✅ Done + validated | `carving.py` (fig_no_blur_comparison.png) |
 | Sec 3.4.2: Mean filter smoothing | Lattice smoothing | ✅ Done | `lattice.py:smooth()` |
-| Sec 3.5: Cyclic lattice | Connect last→first plane | ✅ Done | `lattice.py` |
-| Sec 3.6: Seam pairs (+1/-1) | Local region resizing | ✅ Done | `carving.py:263` |
-| Sec 4.0.1: Gaussian guide | Cyclic seam closure | ✅ Done | `seam.py:82` |
-| Fig 9: Lattice from points | Arc-length resampling | ✅ Done | `lattice.py:83` |
+| Sec 3.5: Cyclic lattice | Connect last→first plane | ✅ Done + bug fixed | `lattice.py` (tangent penalty + frac wrap) |
+| Sec 3.6: Seam pairs (+1/-1) | Local region resizing | ✅ Done + tested | `carving.py:carve_seam_pairs()` |
+| Sec 4.0.1: Gaussian guide | Cyclic seam closure | ✅ Done | `seam.py:greedy_seam_cyclic()` |
+| Sec 4.0.1: Multi-greedy | Multiple starting points | ✅ Done | `seam.py` (n_candidates param) |
+| Sec 4.0.1: Graph-cut / DP | Optimal seam finding | ❌ TODO | Needed for flat-energy regions |
+| Fig 9: Lattice from points | Arc-length resampling | ✅ Done | `lattice.py:from_curve_points()` |
 | Page 10: Energy in [0,1] | Normalize energy | ✅ Done | `energy.py:normalize_energy()` |
 | Forward energy (Rubinstein 2008) | Edge-aware seam cost | ✅ Done | `energy.py:forward_energy()` |
 | ROI-bounded carving | Validity mask | ✅ Done | `carving.py:roi_bounds` |
-| Figs 3,6,10,22: Visual results | Paper figure reproduction | ❌ TODO | Phase 2 |
+| Figs 3,6,10,22: Visual results | Paper figure reproduction | ✅ Done | `examples/reproduce_figures.py` |
 
 ---
 
