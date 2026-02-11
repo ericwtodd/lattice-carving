@@ -6,51 +6,24 @@ Research/implementation project for generalized lattice-guided seam carving,
 based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
 (Flynn et al., 2021). The paper PDF is at `generalized-fluid-carving.pdf`.
 
-## Current State (as of 2026-02-11 - Evening)
+## Current State (as of 2026-02-11)
 
-**What works (lattice construction is SOLID):**
-- ✅ **Lattice2D.from_curve_points()** - Build lattice from user point list (Figure 9)
-  - Arc length resampling for uniform spacing
-  - Symmetric scanline coverage (±perp_extent from centerline)
-  - Origins aligned with user-specified curve points
-  - Forward/inverse mapping with u_offset for centering
-- ✅ `Lattice2D.rectangular()` and `Lattice2D.circular()` constructors
-- ✅ Forward mapping (world V → lattice L) and inverse mapping (L → V), vectorized
-- ✅ Gradient magnitude energy (Sobel filters)
-- ✅ Greedy and multi-greedy seam algorithms
-- ✅ Seam removal and windowed seam finding
+**Core pipeline — all implemented and tested:**
+- ✅ **Lattice construction**: `rectangular()`, `circular()`, `from_curve_points()`, `from_horizontal_curve()`
+  - Arc length resampling, symmetric scanlines, cyclic support (Section 3.5)
+  - Forward/inverse mapping fully vectorized
+- ✅ **Lattice smoothing** (Section 3.4.2): `Lattice2D.smooth()`
+  - Iterative mean filter on origins, overlap detection, convergence stopping
+- ✅ **Energy functions**: gradient magnitude (Eq. 6), forward energy (Rubinstein 2008), normalization to [0,1]
+- ✅ **Seam algorithms**: greedy, multi-greedy, windowed, cyclic (Section 4.0.1)
+- ✅ **Carving the mapping** (Section 3.3): single-interpolation approach, cumulative shifts
+- ✅ **Seam pairs** (Section 3.6): ROI shrink + pair expand, boundary preservation
+- ✅ **ROI-bounded carving**: `roi_bounds` parameter, validity masking
 
-**Recent critical fixes:**
-1. ✅ **Iterative warping bug** - Was sampling warped image repeatedly (compounds blur)
-   - Fix: Sample from ORIGINAL image once at end using cumulative shifts
-2. ✅ **Cumulative shift bug** - Shifts computed against fixed u_map
-   - Fix: Track cumulative_shift across iterations
-3. ✅ **Asymmetric scanlines** - Only extended one side of curve
-   - Fix: Apply u_offset in both forward AND inverse mapping
-4. ✅ **Origins not aligned** - Were offset from user points
-   - Fix: Keep origins on centerline, use u_offset for symmetric coverage
-
-**Current status:**
-- Lattice construction: **SOLID** ✓
-- Carving algorithms: **FIXED BUT UNTESTED** ⚠️
-- Need validation on real test cases with proper lattices
-
-**What's implemented but needs debugging:**
-1. ✅ **"Carving the mapping" (Section 3.3)** — Implemented in `carve_image_lattice_guided()`
-   - Maps energy V→L, finds seam in L, shifts u-coordinates, single pixel resample
-   - Has cumulative shift bug fix, but still produces distorted output
-2. ✅ **Seam pairs (Section 3.6)** — Implemented in `carve_seam_pairs()`
-   - Two windowed regions: ROI (shrink) and pair (expand)
-   - Same cumulative shift issue, needs debugging
-3. ✅ **Curved lattice support** — Added `Lattice2D.from_horizontal_curve()`
-   - For rivers, roads, or features following a curve
-   - Creates scanlines perpendicular to centerline curve
-
-**What's not implemented yet:**
-1. **ROI-bounded lattices** — Lattice should cover region of interest only, not entire image
-2. **Cyclic lattices (Section 3.5)** — For closed shapes (rings, tubes)
-3. **Forward energy (Rubinstein et al. 2008)** — Stub exists in `energy.py`
-4. **Concentric circle lattice** — May or may not be needed (radial lattice might work)
+**What still needs work:**
+- ⚠️ **Carving correctness tests** — weak tests removed, real ones not yet written (Task 7)
+- ⚠️ **Visual validation** — no reproduce_figures.py yet (Task 8)
+- ⚠️ **Browser demo** — not started (Task 9)
 
 ## Coding Preferences
 
@@ -61,31 +34,33 @@ based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
 
 ## Testing
 
-- pytest test suite in `tests/test_lattice.py`
+- Test suite split across focused modules:
+  - `tests/conftest.py` — shared fixtures (`make_gradient_image`, `make_ring_image`)
+  - `tests/test_lattice.py` — construction, mapping, resampling (17 tests)
+  - `tests/test_energy.py` — gradient magnitude, normalization, forward energy (14 tests)
+  - `tests/test_seam.py` — greedy, windowed, multi-greedy, removal (12 tests)
+  - `tests/test_carving.py` — traditional + lattice-guided + seam pairs (5 meaningful tests)
+  - `tests/test_smoothing.py` — overlap detection, smoothing convergence (7 tests)
 - Run with: `conda run -n lattice-carving python -m pytest tests/ -v`
-- Tests should verify algorithmic correctness, not just shapes
+- **55 tests total, all passing**
+- Tests verify algorithmic correctness, not just shapes
 - Use deterministic seeds (`torch.manual_seed`) for reproducibility
-
-## Documentation
-
-- Keep DEVLOG.md updated with progress, decisions, and problems encountered
-- Document algorithmic choices and their rationale
-- Include references to the background paper
-- Commit often with descriptive messages
 
 ## Architecture
 
-- `src/lattice.py` — Lattice2D class: construction, forward/inverse mapping, resampling
-  - `rectangular()` - straight horizontal scanlines
-  - `circular()` - radial scanlines from center
-  - `from_horizontal_curve()` - curved scanlines following a path
-- `src/energy.py` — Energy functions (gradient magnitude, forward energy)
-- `src/seam.py` — Greedy seam computation, seam removal
+- `src/lattice.py` — Lattice2D class: construction, forward/inverse mapping, resampling, smoothing
+  - `rectangular()`, `circular()`, `from_curve_points()`, `from_horizontal_curve()`
+  - `smooth()` — Section 3.4.2 iterative mean filter
+- `src/energy.py` — Energy functions
+  - `gradient_magnitude_energy()` — Eq. 6, L1 gradient norm
+  - `normalize_energy()` — remap to [0, 1] (paper page 10)
+  - `forward_energy()` — Rubinstein et al. 2008, three-cost DP
+- `src/seam.py` — Seam algorithms: greedy, windowed, cyclic, multi-greedy, removal
 - `src/carving.py` — High-level carving orchestration
-  - `carve_image_lattice_guided()` - carving the mapping approach
-  - `carve_seam_pairs()` - local region resizing
-- `examples/debug_lattice_carving.py` — Debug visualization (bagel, river, arch)
-- `tests/` — pytest suite (30 tests, but only check shapes not correctness)
+  - `carve_image_traditional()` — standard rectangular seam carving
+  - `carve_image_lattice_guided()` — carving the mapping (Section 3.3), with ROI bounds
+  - `carve_seam_pairs()` — local region resizing (Section 3.6)
+- `pyproject.toml` — package config for `pip install -e .`
 
 ## Key Algorithmic Notes
 
@@ -93,29 +68,6 @@ based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
   Multi-greedy helps by trying multiple starting points.
 - Circular lattice forward_mapping needs tangent-projection penalty to disambiguate
   between a radial scanline and its 180° opposite. Already implemented.
-- The lattice forward/inverse mappings are fully vectorized (batched tensor ops),
-  replacing earlier O(N*n_lines) Python loops.
-
-## Test Cases for Validation
-
-Four test cases, each with centerline defined as points:
-
-1. **Sine Wave**: Simple sinusoidal curve for basic validation
-   - Centerline: y = 200 + 40*sin(2πx/400)
-   - Tests symmetric coverage, arc length resampling
-
-2. **Arch (Figure 3)**: Semicircular arch
-   - Centerline: semicircle from paper's Figure 3
-   - Traditional should squish, lattice-guided should preserve
-
-3. **River**: Horizontally-flowing sinusoidal river
-   - Centerline: y = 256 + 50*sin(3πx/512)
-   - Scanlines perpendicular to flow
-
-4. **Bagel (seam pairs)**: Circular centerline around hole
-   - Centerline: circle at middle radius between hole and edge
-   - Test seam pairs: shrink hole, expand background
-
-**Current test:** `conda run -n lattice-carving python examples/test_lattice_visualization.py`
-- Validates lattice construction only (no carving yet)
-- Generates: lattice_sine.png, lattice_arch.png, lattice_river.png, lattice_bagel.png
+- The lattice forward/inverse mappings are fully vectorized (batched tensor ops).
+- Energy normalization is applied in all carving pipelines per paper specification.
+- Forward energy uses cumulative DP — values increase top-to-bottom.

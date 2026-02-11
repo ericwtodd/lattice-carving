@@ -193,12 +193,14 @@ Phase 4.2 (HTML/CSS layout) can start in parallel with everything.
 | Eq. 6: E_I = \|∂I/∂x\| + \|∂I/∂y\| | L1 gradient magnitude | ✅ Done | `energy.py:14` |
 | Eq. 4-5: p_w* = g*(f(p_w)) | Carve the mapping | ✅ Done | `carving.py` |
 | Sec 3.3: Sample original once | No double interpolation | ✅ Done | `carving.py:255` |
-| Sec 3.4.2: Mean filter smoothing | Lattice smoothing | ❌ TODO | Task 1.1 |
+| Sec 3.4.2: Mean filter smoothing | Lattice smoothing | ✅ Done | `lattice.py:smooth()` |
 | Sec 3.5: Cyclic lattice | Connect last→first plane | ✅ Done | `lattice.py` |
 | Sec 3.6: Seam pairs (+1/-1) | Local region resizing | ✅ Done | `carving.py:263` |
 | Sec 4.0.1: Gaussian guide | Cyclic seam closure | ✅ Done | `seam.py:82` |
 | Fig 9: Lattice from points | Arc-length resampling | ✅ Done | `lattice.py:83` |
-| Page 10: Energy in [0,1] | Normalize energy | ❌ TODO | Task 1.2 |
+| Page 10: Energy in [0,1] | Normalize energy | ✅ Done | `energy.py:normalize_energy()` |
+| Forward energy (Rubinstein 2008) | Edge-aware seam cost | ✅ Done | `energy.py:forward_energy()` |
+| ROI-bounded carving | Validity mask | ✅ Done | `carving.py:roi_bounds` |
 | Figs 3,6,10,22: Visual results | Paper figure reproduction | ❌ TODO | Phase 2 |
 
 ---
