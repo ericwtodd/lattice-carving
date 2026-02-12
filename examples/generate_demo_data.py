@@ -49,11 +49,20 @@ def save_energy(energy_2d, path):
     plt.imsave(str(path), energy_2d.cpu().numpy(), cmap='hot')
 
 
-def save_seam_overlay(lattice_img_np, roi_seam, pair_seam, roi_range, pair_range, path):
+def save_seam_overlay(lattice_img_np, roi_seam, pair_seam, roi_range, pair_range,
+                      path, cyclic=False):
     """Save lattice-space image with seam lines and window boundaries overlaid."""
     n_lines = lattice_img_np.shape[0]
     lattice_w = lattice_img_np.shape[1]
     n_idx = np.arange(n_lines)
+
+    # For cyclic lattices, close the loop by repeating first row at n_lines
+    roi_u = roi_seam.cpu().numpy()
+    pair_u = pair_seam.cpu().numpy()
+    if cyclic:
+        n_idx = np.append(n_idx, n_lines)
+        roi_u = np.append(roi_u, roi_u[0])
+        pair_u = np.append(pair_u, pair_u[0])
 
     # Figure sized to match lattice-space aspect ratio
     fig_h = 6
@@ -64,8 +73,8 @@ def save_seam_overlay(lattice_img_np, roi_seam, pair_seam, roi_range, pair_range
     ax.imshow(lattice_img_np, aspect='auto', interpolation='bilinear')
 
     # ROI seam (cyan) and pair seam (magenta)
-    ax.plot(roi_seam.cpu().numpy(), n_idx, color='cyan', linewidth=2, label='ROI seam')
-    ax.plot(pair_seam.cpu().numpy(), n_idx, color='magenta', linewidth=2, label='Pair seam')
+    ax.plot(roi_u, n_idx, color='cyan', linewidth=2, label='ROI seam')
+    ax.plot(pair_u, n_idx, color='magenta', linewidth=2, label='Pair seam')
 
     # Window boundaries (dashed)
     ax.axvline(roi_range[0], color='cyan', linestyle='--', linewidth=1, alpha=0.7)
@@ -81,21 +90,27 @@ def save_seam_overlay(lattice_img_np, roi_seam, pair_seam, roi_range, pair_range
     plt.close(fig)
 
 
-def seam_to_world(seam, lattice):
+def seam_to_world(seam, lattice, cyclic=False):
     """Map a lattice-space seam (u per scanline) to world-space (x, y) points.
+
+    For cyclic lattices, appends the first point to close the loop.
 
     Args:
         seam: (n_lines,) tensor of u-coordinates per scanline
         lattice: Lattice2D structure
+        cyclic: If True, close the loop by appending the first point
 
     Returns:
-        xy: (n_lines, 2) numpy array of (x, y) world-space coordinates
+        xy: (N, 2) numpy array of (x, y) world-space coordinates
     """
     n_lines = seam.shape[0]
     n_coords = torch.arange(n_lines, dtype=torch.float32, device=seam.device)
     lattice_pts = torch.stack([seam.float(), n_coords], dim=1)  # (n_lines, 2)
     world_pts = lattice.inverse_mapping(lattice_pts)  # (n_lines, 2)
-    return world_pts.cpu().numpy()
+    xy = world_pts.cpu().numpy()
+    if cyclic:
+        xy = np.vstack([xy, xy[:1]])  # close the loop
+    return xy
 
 
 def save_world_seam_overlay(image_np, all_seams, path, H, W):
@@ -159,8 +174,8 @@ def generate_demo(output_dir: Path, H=600, W=600, n_scanlines=256, n_seams=18):
     image, cx, cy, inner_r, outer_r = make_synthetic_bagel(H, W)
     mid_r = (inner_r + outer_r) / 2
 
-    # --- Build circular lattice ---
-    theta = torch.linspace(0, 2 * np.pi, 80)
+    # --- Build circular lattice (fine-grained for smooth seams) ---
+    theta = torch.linspace(0, 2 * np.pi, 200)
     circle_x = cx + mid_r * torch.cos(theta)
     circle_y = cy + mid_r * torch.sin(theta)
     curve_pts = torch.stack([circle_x, circle_y], dim=1)
@@ -289,11 +304,12 @@ def generate_demo(output_dir: Path, H=600, W=600, n_scanlines=256, n_seams=18):
 
         # Seam overlay on lattice-space color image
         save_seam_overlay(lattice_img_np, roi_seam, pair_seam,
-                          roi_range, pair_range, step_dir / 'seam_overlay.png')
+                          roi_range, pair_range, step_dir / 'seam_overlay.png',
+                          cyclic=True)
 
         # World-space seam overlay (cumulative — all seams up to this step)
-        xy_roi = seam_to_world(roi_seam, lat)
-        xy_pair = seam_to_world(pair_seam, lat)
+        xy_roi = seam_to_world(roi_seam, lat, cyclic=True)
+        xy_pair = seam_to_world(pair_seam, lat, cyclic=True)
         all_world_seams.append((xy_roi, xy_pair))
         save_world_seam_overlay(tensor_to_numpy(carved), all_world_seams,
                                 step_dir / 'image_seams.png', H, W)
