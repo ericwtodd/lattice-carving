@@ -369,7 +369,7 @@ def setup_synthetic_bagel():
 
     perp = (outer_r - inner_r) / 2 + 15
     lattice = Lattice2D.from_curve_points(
-        curve_pts, n_lines=256, perp_extent=perp, cyclic=True)
+        curve_pts, n_lines=1024, perp_extent=perp, cyclic=True)
 
     lattice_w = int(2 * perp)
     center_u = int(perp)
@@ -406,12 +406,12 @@ def setup_arch():
     angles = torch.linspace(np.pi, 0, 200)
     mid_r = (inner_r + outer_r) / 2
     arch_x = cx + mid_r * torch.cos(angles)
-    arch_y = cy + mid_r * torch.sin(angles)
+    arch_y = cy - mid_r * torch.sin(angles)
     curve_pts = torch.stack([arch_x, arch_y], dim=1)
 
     perp = (outer_r - inner_r) / 2 + 30
     lattice = Lattice2D.from_curve_points(
-        curve_pts, n_lines=256, perp_extent=perp)
+        curve_pts, n_lines=1024, perp_extent=perp)
 
     lattice_w = int(2 * perp)
     center_u = int(perp)
@@ -466,7 +466,7 @@ def setup_river():
 
     perp = band_width + 30
     lattice = Lattice2D.from_curve_points(
-        curve_pts, n_lines=256, perp_extent=perp)
+        curve_pts, n_lines=1024, perp_extent=perp)
 
     lattice_w = int(2 * perp)
     center_u = int(perp)
