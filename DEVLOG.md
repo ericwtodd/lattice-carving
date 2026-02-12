@@ -150,6 +150,58 @@ Also improved the lattice overlay visualization:
 
 ---
 
+## 2026-02-12: Lattice-Space Carving Pipeline
+
+### Problem
+
+The previous "carving the mapping" approach applied seam shifts in world space per-pixel. This caused:
+
+1. **Shift discontinuities within small features**: Sesame seeds (7x7 patches) got split by fractional shift boundaries — diagnostic showed mixed shift values [0.0, 1.0] within a single seed's patch, causing half the seed to shift and half to stay.
+
+2. **Sawtooth artifacts at ring boundaries**: Shift boundaries in world space don't follow lattice grid lines, creating irregular edges.
+
+### Solution: Carve in lattice space
+
+Instead of accumulating shifts in world space, operate directly on the regular lattice grid:
+
+```
+Old pipeline (per step):
+  1. Compute energy on world-space image
+  2. Resample energy to lattice space
+  3. Find seams in lattice space
+  4. Apply fractional shifts in world space (cumulative_shift)
+  5. Warp original image with cumulative shifts
+
+New pipeline (per step):
+  1. Compute energy directly on lattice-space image
+  2. Find ROI seam + pair seam in lattice space
+  3. remove_seam() on ROI (width-1) — exact integer column removal
+  4. insert_seam() on pair (width+1) — average of neighbors, back to original width
+  5. resample_from_lattice_space() for world-space display
+```
+
+### Changes
+
+**`src/seam.py`** — Added `insert_seam()`: mirror of `remove_seam()`. Expands image by 1 column/row. New pixel = average of seam pixel and its right neighbor. Handles (C,H,W) and (H,W).
+
+**`examples/generate_demo_data.py`** — Rewrote `generate_seam_pair_demo()`:
+- Removed imports: `_warp_and_resample`, `_interpolate_seam`
+- Added imports: `remove_seam`, `insert_seam`
+- Loop now operates on `lattice_img` tensor directly (remove/insert columns)
+- Energy computed directly on lattice-space image (no world→lattice resample)
+- World-space display via `resample_from_lattice_space()` each step
+- Pair seam adjusted by -1 after ROI removal (ROI always left of pair)
+
+**No changes to `src/carving.py` or `src/lattice.py`** — the existing `carve_seam_pairs()` still uses the old world-space approach. The new pipeline is currently only in the demo generator; if results are good, it can be promoted to the main carving module.
+
+### Why this should fix the artifacts
+
+- **No shift discontinuities**: Seam removal/insertion on a regular grid = exact integer column operations. A seed is either fully in column N or column N+1, never split.
+- **No sub-pixel boundaries**: The lattice grid is perfectly regular, so there are no fractional boundaries cutting through features.
+- **Simpler energy path**: Energy computed directly on the lattice image, not resampled from world space.
+
+---
+
 ## Next Steps
 
 ### Sawtooth artifacts investigation — RESOLVED
