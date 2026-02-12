@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lattice-Guided Seam Carving Demo</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Lattice-Guided Seam Pair Carving</h1>
+    <p class="subtitle">Flynn et al. 2021 &mdash; Synthetic Bagel Ring Shrinking</p>
+  </header>
+
+  <main>
+    <div class="left-panel">
+      <img id="main-image" alt="Carved image">
+      <div class="slider-container">
+        <input type="range" id="step-slider" min="0" max="0" value="0">
+        <span id="step-label">Step: 0 / 0</span>
+      </div>
+    </div>
+
+    <div class="right-panel">
+      <div class="diag-panel">
+        <h3>Lattice Space</h3>
+        <img id="lattice-image" alt="Lattice-space image">
+      </div>
+      <div class="diag-panel">
+        <h3>Energy</h3>
+        <img id="energy-image" alt="Energy heatmap">
+      </div>
+      <div class="diag-panel">
+        <h3>Seam Overlay</h3>
+        <img id="seam-image" alt="Seam overlay">
+      </div>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
