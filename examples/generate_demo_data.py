@@ -573,11 +573,11 @@ if __name__ == '__main__':
 
     all_demos = [
         ('synthetic_bagel_shrink', {**setup_synthetic_bagel(), 'mode': 'shrink', 'title':'Synthetic Bagel -- Shrink'}),
-        # ('synthetic_bagel_grow',   {**setup_synthetic_bagel(), 'mode': 'grow', 'title':'Synthetic Bagel -- Grow'}),
+        ('synthetic_bagel_grow',   {**setup_synthetic_bagel(), 'mode': 'grow', 'title':'Synthetic Bagel -- Grow'}),
         ('arch_shrink', {**setup_arch(), 'mode': 'shrink', 'title':'Arch -- Shrink'}),
-        # ('arch_grow', {**setup_arch(), 'mode':'grow', 'title':'Arch -- Grow'}),
+        ('arch_grow', {**setup_arch(), 'mode':'grow', 'title':'Arch -- Grow'}),
         ('river_shrink', {**setup_river(), 'mode': 'shrink', 'title':'River -- Shrink'}),
-        # ('river_grow', {**setup_river(), 'mode': 'grow', 'title':'River -- Grow'})
+        ('river_grow', {**setup_river(), 'mode': 'grow', 'title':'River -- Grow'})
     ]
 
     results = []
