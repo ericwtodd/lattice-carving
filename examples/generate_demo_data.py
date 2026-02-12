@@ -143,6 +143,36 @@ def save_step0_seam_overlay(lattice_img_np, roi_range, pair_range, path, n_lines
 # Generic seam-pair demo generator
 # ---------------------------------------------------------------------------
 
+def save_lattice_overlay(image_np, lattice, lattice_w, path, H, W, n_scanlines=16, n_u=12):
+    """Save world-space image with lattice grid drawn on top."""
+    fig_w = 6 * W / max(H, W)
+    fig_h = 6 * H / max(H, W)
+    fig, ax = plt.subplots(1, 1, figsize=(fig_w, fig_h))
+    ax.imshow(image_np, interpolation='bilinear')
+
+    # Draw scanlines (constant n)
+    for i in range(0, lattice.n_lines, max(1, lattice.n_lines // n_scanlines)):
+        u_vals = torch.linspace(0, float(lattice_w), 80)
+        n_val = float(i)
+        pts = torch.stack([u_vals, torch.full_like(u_vals, n_val)], dim=1)
+        world_pts = lattice.inverse_mapping(pts).cpu().numpy()
+        ax.plot(world_pts[:, 0], world_pts[:, 1], 'cyan', alpha=0.4, linewidth=0.7)
+
+    # Draw perpendicular lines (constant u)
+    n_max = lattice.n_lines
+    for u_val in np.linspace(0, lattice_w, n_u):
+        n_vals = torch.linspace(0, float(n_max - 1), 100)
+        pts = torch.stack([torch.full_like(n_vals, u_val), n_vals], dim=1)
+        world_pts = lattice.inverse_mapping(pts).cpu().numpy()
+        ax.plot(world_pts[:, 0], world_pts[:, 1], 'yellow', alpha=0.3, linewidth=0.7)
+
+    ax.set_xlim(0, W)
+    ax.set_ylim(H, 0)
+    ax.axis('off')
+    fig.savefig(str(path), dpi=150, bbox_inches='tight', pad_inches=0)
+    plt.close(fig)
+
+
 def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
                             roi_range, pair_range, n_seams, cyclic, title):
     """Generate step-by-step seam pair demo data.
@@ -162,6 +192,22 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
     u_map, n_map = _precompute_forward_mapping(lattice, H, W, image.device)
     original_image = image.clone()
     cumulative_shift = torch.zeros_like(u_map)
+
+    # Validity mask: pixels actually inside the lattice region.
+    # forward_mapping projects ALL pixels onto some scanline, even distant ones.
+    # Use roundtrip test: forward -> inverse -> compare with original position.
+    # Pixels inside the lattice region roundtrip accurately; distant pixels don't.
+    y_coords = torch.arange(H, dtype=torch.float32, device=image.device)
+    x_coords = torch.arange(W, dtype=torch.float32, device=image.device)
+    y_grid, x_grid = torch.meshgrid(y_coords, x_coords, indexing='ij')
+    world_pts = torch.stack([x_grid.reshape(-1), y_grid.reshape(-1)], dim=1)
+    lattice_pts = torch.stack([u_map.reshape(-1), n_map.reshape(-1)], dim=1)
+    roundtrip_pts = lattice.inverse_mapping(lattice_pts)
+    roundtrip_err = torch.sqrt(((world_pts - roundtrip_pts)**2).sum(dim=1)).reshape(H, W)
+    valid_mask = roundtrip_err < 3.0  # pixels that map cleanly through the lattice
+    valid_mask_3d = valid_mask.unsqueeze(0).expand(C, -1, -1)
+    print(f"    Valid pixels: {valid_mask.sum().item()}/{H*W} "
+          f"({100*valid_mask.float().mean():.1f}%)")
 
     metadata = {
         'title': title,
@@ -197,6 +243,9 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
     save_step0_seam_overlay(lattice_img_np, roi_range, pair_range,
                             step_dir / 'seam_overlay.png', lattice.n_lines)
 
+    save_lattice_overlay(tensor_to_numpy(image), lattice, lattice_w,
+                         step_dir / 'image_lattice.png', H, W)
+
     metadata['steps'].append({'step': 0})
     print(f"    Step 0 (original)")
 
@@ -216,8 +265,9 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
         if i == 0:
             energy = gradient_magnitude_energy(original_image)
         else:
-            current_warped = _warp_and_resample(
+            raw_warped = _warp_and_resample(
                 original_image, lattice, u_map, n_map, cumulative_shift)
+            current_warped = torch.where(valid_mask_3d, raw_warped, original_image)
             energy = gradient_magnitude_energy(current_warped)
 
         # Resample energy to lattice space + normalize
@@ -231,7 +281,7 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
         roi_seam = find_seam(lattice_energy, roi_range, direction='vertical')
         pair_seam = find_seam(lattice_energy, pair_range, direction='vertical')
 
-        # Apply shifts
+        # Apply shifts (only to valid pixels inside lattice region)
         roi_seam_interp = _interpolate_seam(roi_seam, n_map)
         pair_seam_interp = _interpolate_seam(pair_seam, n_map)
 
@@ -241,11 +291,15 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
                                  torch.ones_like(u_map), torch.zeros_like(u_map))
         new_shift += torch.where(u_adjusted > pair_seam_interp,
                                  -torch.ones_like(u_map), torch.zeros_like(u_map))
+        # Zero out shift for pixels outside the lattice region
+        new_shift = torch.where(valid_mask, new_shift, torch.zeros_like(new_shift))
         cumulative_shift = cumulative_shift + new_shift
 
         # --- Save outputs ---
-        carved = _warp_and_resample(
+        warped = _warp_and_resample(
             original_image, lattice, u_map, n_map, cumulative_shift)
+        # ROI masking: keep original pixels outside the lattice region
+        carved = torch.where(valid_mask_3d, warped, original_image)
         save_image_clean(tensor_to_numpy(carved), step_dir / 'image.png')
 
         lattice_img = lattice.resample_to_lattice_space(carved, lattice_w)
@@ -263,6 +317,9 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
         all_world_seams.append((xy_roi, xy_pair))
         save_world_seam_overlay(tensor_to_numpy(carved), all_world_seams,
                                 step_dir / 'image_seams.png', H, W)
+
+        save_lattice_overlay(tensor_to_numpy(carved), lattice, lattice_w,
+                             step_dir / 'image_lattice.png', H, W)
 
         metadata['steps'].append({
             'step': step_num,

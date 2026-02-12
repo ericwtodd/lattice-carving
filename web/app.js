@@ -7,9 +7,10 @@ const seamImg = document.getElementById('seam-image');
 const slider = document.getElementById('step-slider');
 const stepLabel = document.getElementById('step-label');
 const showSeamsCheckbox = document.getElementById('show-seams');
+const showLatticeCheckbox = document.getElementById('show-lattice');
 const demoSelect = document.getElementById('demo-select');
 
-const IMAGE_TYPES = ['image', 'image_seams', 'lattice_space', 'energy', 'seam_overlay'];
+const IMAGE_TYPES = ['image', 'image_seams', 'image_lattice', 'lattice_space', 'energy', 'seam_overlay'];
 
 let currentDemo = null;
 let maxStep = 0;
@@ -31,10 +32,15 @@ function preloadStep(demoName, step) {
   }
 }
 
+function getMainType() {
+  if (showLatticeCheckbox.checked) return 'image_lattice';
+  if (showSeamsCheckbox.checked) return 'image_seams';
+  return 'image';
+}
+
 function showStep(step) {
   if (!currentDemo) return;
-  const showSeams = showSeamsCheckbox.checked;
-  const mainType = showSeams ? 'image_seams' : 'image';
+  const mainType = getMainType();
   const key = `${currentDemo.name}/${step}`;
   const cached = imageCache[key];
   if (cached) {
@@ -58,7 +64,6 @@ function loadDemo(demo) {
   slider.max = maxStep;
   slider.value = 0;
 
-  // Preload all steps for this demo
   for (let i = 0; i <= maxStep; i++) {
     preloadStep(demo.name, i);
   }
@@ -77,12 +82,18 @@ slider.addEventListener('input', () => {
 });
 
 showSeamsCheckbox.addEventListener('change', () => {
+  // Mutually exclusive with lattice overlay
+  if (showSeamsCheckbox.checked) showLatticeCheckbox.checked = false;
+  showStep(parseInt(slider.value, 10));
+});
+
+showLatticeCheckbox.addEventListener('change', () => {
+  if (showLatticeCheckbox.checked) showSeamsCheckbox.checked = false;
   showStep(parseInt(slider.value, 10));
 });
 
 // Keyboard navigation
 document.addEventListener('keydown', (e) => {
-  // Don't capture keys when select is focused
   if (document.activeElement === demoSelect) return;
 
   const current = parseInt(slider.value, 10);
@@ -96,6 +107,11 @@ document.addEventListener('keydown', (e) => {
     showStep(next);
   } else if (e.key === 's' || e.key === 'S') {
     showSeamsCheckbox.checked = !showSeamsCheckbox.checked;
+    if (showSeamsCheckbox.checked) showLatticeCheckbox.checked = false;
+    showStep(current);
+  } else if (e.key === 'l' || e.key === 'L') {
+    showLatticeCheckbox.checked = !showLatticeCheckbox.checked;
+    if (showLatticeCheckbox.checked) showSeamsCheckbox.checked = false;
     showStep(current);
   }
 });
@@ -104,7 +120,6 @@ document.addEventListener('keydown', (e) => {
 if (typeof DEMOS === 'undefined' || DEMOS.length === 0) {
   stepLabel.textContent = 'Error: run generate_demo_data.py first';
 } else {
-  // Populate demo selector
   for (const demo of DEMOS) {
     const opt = document.createElement('option');
     opt.textContent = demo.title;
