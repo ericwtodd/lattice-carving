@@ -37,6 +37,7 @@ wheels/
 # Project specific
 output/
 results/
+demo_data/
 *.png
 *.jpg
 !bagel.jpg
