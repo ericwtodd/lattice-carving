@@ -7,7 +7,8 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 from .lattice import Lattice2D
 from .energy import gradient_magnitude_energy, normalize_energy
-from .seam import greedy_seam, greedy_seam_windowed, remove_seam
+from .seam import (greedy_seam, greedy_seam_windowed, remove_seam,
+                    dp_seam, dp_seam_windowed, dp_seam_cyclic)
 
 
 def carve_image_traditional(image: torch.Tensor, n_seams: int,
@@ -181,7 +182,8 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
                                 n_seams: int, direction: str = 'vertical',
                                 lattice_width: Optional[int] = None,
                                 roi_bounds: Optional[Tuple[float, float]] = None,
-                                n_candidates: int = 1) -> torch.Tensor:
+                                n_candidates: int = 1,
+                                method: str = 'dp') -> torch.Tensor:
     """
     Lattice-guided seam carving using the "carving the mapping" approach.
 
@@ -203,6 +205,7 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
         roi_bounds: Optional (u_min, u_max) — only warp pixels whose u-coordinate
             falls within these bounds. Pixels outside stay unchanged.
         n_candidates: Number of multi-greedy starting points (1 = single greedy)
+        method: 'dp' (optimal, default) or 'greedy' (fast, may wander)
 
     Returns:
         Carved image in world space (same shape as input)
@@ -246,8 +249,11 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
         lattice_energy = normalize_energy(lattice_energy)
 
         # Step 3: Find seam in lattice space
-        seam = greedy_seam(lattice_energy, direction=direction,
-                           n_candidates=n_candidates)
+        if method == 'dp':
+            seam = dp_seam(lattice_energy, direction=direction)
+        else:
+            seam = greedy_seam(lattice_energy, direction=direction,
+                               n_candidates=n_candidates)
 
         # Step 4: Interpolate seam at each pixel's fractional n
         seam_interp = _interpolate_seam(seam, n_map)
@@ -283,7 +289,8 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
                      pair_range: Tuple[int, int],
                      direction: str = 'vertical',
                      lattice_width: Optional[int] = None,
-                     n_candidates: int = 1) -> torch.Tensor:
+                     n_candidates: int = 1,
+                     method: str = 'dp') -> torch.Tensor:
     """
     Seam pair carving for local region resizing without changing global boundaries.
 
@@ -293,6 +300,9 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
 
     The +1 and -1 shifts cancel at the global boundary, preserving image
     dimensions and edge content.
+
+    For cyclic lattices, uses cyclic-aware DP to ensure seams close
+    (seam[0] == seam[-1]), avoiding wrap-point discontinuities.
 
     See Section 3.6 of Flynn et al. 2021.
 
@@ -305,6 +315,7 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
         direction: 'vertical' or 'horizontal'
         lattice_width: Width of lattice space (if None, uses image width)
         n_candidates: Number of multi-greedy starting points (1 = single greedy)
+        method: 'dp' (optimal, default) or 'greedy' (fast, may wander)
 
     Returns:
         Carved image in world space (same shape as input)
@@ -348,10 +359,18 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
         lattice_energy = normalize_energy(lattice_energy)
 
         # Step 3: Find seams in windowed regions
-        roi_seam = greedy_seam_windowed(lattice_energy, roi_range, direction=direction,
-                                        n_candidates=n_candidates)
-        pair_seam = greedy_seam_windowed(lattice_energy, pair_range, direction=direction,
-                                         n_candidates=n_candidates)
+        is_cyclic = hasattr(lattice, '_cyclic') and lattice._cyclic
+        if method == 'dp' and is_cyclic:
+            roi_seam = dp_seam_cyclic(lattice_energy, roi_range, direction=direction)
+            pair_seam = dp_seam_cyclic(lattice_energy, pair_range, direction=direction)
+        elif method == 'dp':
+            roi_seam = dp_seam_windowed(lattice_energy, roi_range, direction=direction)
+            pair_seam = dp_seam_windowed(lattice_energy, pair_range, direction=direction)
+        else:
+            roi_seam = greedy_seam_windowed(lattice_energy, roi_range, direction=direction,
+                                            n_candidates=n_candidates)
+            pair_seam = greedy_seam_windowed(lattice_energy, pair_range, direction=direction,
+                                             n_candidates=n_candidates)
 
         # Step 4: Interpolate both seams at each pixel's fractional n
         roi_seam_interp = _interpolate_seam(roi_seam, n_map)

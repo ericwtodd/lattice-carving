@@ -63,6 +63,25 @@ Energy computation: RGB is converted to grayscale using luma weights (0.299R + 0
 
 ---
 
+## 2026-02-12: DP Seam Finding & Resolution Investigation
+
+### DP seam implementation
+
+Added three DP seam functions to `src/seam.py`:
+- `dp_seam(energy, direction)` — Standard Avidan & Shamir 2007: fill cumulative cost matrix top→bottom, backtrack for globally optimal seam
+- `dp_seam_windowed(energy, col_range)` — Masks columns outside window to infinity, then runs dp_seam
+- `dp_seam_cyclic(energy, col_range)` — Tries each starting column, forces seam[0]==seam[-1], picks lowest-cost closed seam
+
+Wired into `carve_image_lattice_guided()` and `carve_seam_pairs()` via `method='dp'` parameter (default). Cyclic lattices automatically use `dp_seam_cyclic`.
+
+### Resolution sweep experiment
+
+Tested 5 configurations: (200px/64), (200px/256), (200px/1024), (600px/256), (600px/1024). Both zero-seam roundtrip error and 5-seam-pair carving. See "Sawtooth artifacts investigation" in Next Steps section for full analysis.
+
+Key finding: the artifacts are a resolution/aliasing problem, not a seam algorithm problem. Higher image res + denser lattice = smoother results.
+
+---
+
 ## 2026-02-11: Cyclic Lattice Support
 
 Added `cyclic=True` parameter to `Lattice2D.from_curve_points()`. For closed curves (circles, rings), the last scanline connects back to the first. Required changes:
@@ -95,16 +114,35 @@ Initially implemented "shrink the hole" by mistake — user clarified they want 
 
 ## Next Steps
 
-### Fix sawtooth artifacts (before demo)
+### Sawtooth artifacts investigation — RESOLVED
 
-Two issues compound to create the sawtooth artifacts on bagel seam pairs:
+**Summary**: The sawtooth/scalloping artifacts on bagel seam pairs were caused by insufficient resolution, not seam quality.
 
-1. **DP seam finding** — The primary fix. Standard Avidan & Shamir 2007 algorithm: fill cumulative cost matrix top-to-bottom, backtrack to find globally optimal seam. In flat-energy regions (uniform bagel body), DP produces smooth/straight seams instead of random-walk wandering. For 2D images, DP = graph-cut quality at O(H * W) cost.
+**What we tried (didn't fix it):**
+1. Multi-greedy (n_candidates=16) — All candidates wander equally in flat energy
+2. DP seam finding — Globally optimal, but "optimal" in flat energy still wanders to chase noise minima
+3. Cyclic-aware DP seams — Ensures seam[0]==seam[-1] but doesn't prevent wandering in between
+4. Narrow ROI (±5 instead of ±15) + more scanlines (256 instead of 64) — Helped somewhat
 
-2. **Cyclic-aware seams in seam pairs** — Currently `carve_seam_pairs()` calls `greedy_seam_windowed()` which is NOT cyclic-aware. For cyclic lattices, scanline 0 and scanline N-1 are adjacent in world space (they wrap around), but the seam treats them as disconnected endpoints. This creates a visible discontinuity at the wrap point. Need to either: (a) use `greedy_seam_cyclic()` (Gaussian guide) in the seam pairs pipeline when the lattice is cyclic, or (b) implement DP with cyclic constraint (seam[0] == seam[N-1]).
+**Root cause discovery:**
+- Zero-seam roundtrip (forward_mapping → inverse_mapping with NO carving) already shows max error of 0.530 on the synthetic bagel
+- Error is concentrated at sharp ring boundaries (uniform color → sharp edge → sub-pixel displacement creates large intensity delta)
+- The scalloping pattern matches the lattice scanline angular spacing — each scanline introduces a tiny positional error that becomes visible at sharp edges
 
-Grid resolution (48-64 scanlines) is probably NOT a factor — artifacts are much larger than the angular step. Easy to verify by bumping to 128.
+**Resolution sweep results (output/fig_resolution_sweep.png):**
 
-### Then: browser demo
+| Config | Roundtrip error | 5-seam carving quality |
+|--------|----------------|----------------------|
+| 200px / 64 lines | Heavy radial pattern | Worst scalloping |
+| 200px / 256 lines | Moderate | Better but still visible |
+| 200px / 1024 lines | Low | Significantly smoother |
+| 600px / 256 lines | Moderate | Better (higher image res helps) |
+| 600px / 1024 lines | Minimal | **Best result** — smooth ring |
+
+**Conclusion**: Both image resolution and lattice resolution matter. The sawtooth is a sampling/aliasing artifact from the discrete lattice grid. The paper's demos use high-res images with proportionally dense lattices. At 600px/1024 scanlines, results look close to the paper.
+
+**Key insight from paper (Section 6.0.7)**: "retarget the region between the seam pairs rather than the entire image" — validity masking (only warping pixels within the lattice region) would further reduce artifacts by not roundtripping pixels that don't need to move.
+
+### Next: browser demo
 
 Pre-compute carving iterations as JSON, build static HTML/JS viewer with seam count slider.

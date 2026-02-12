@@ -31,7 +31,7 @@ from src.carving import (
     _precompute_forward_mapping,
 )
 from src.energy import gradient_magnitude_energy, normalize_energy
-from src.seam import greedy_seam, greedy_seam_windowed
+from src.seam import greedy_seam, greedy_seam_windowed, dp_seam_windowed, dp_seam_cyclic
 
 OUTPUT_DIR = Path(__file__).parent.parent / "output"
 
@@ -192,7 +192,7 @@ def figure_synthetic_bagel_seam_pairs():
     curve_pts = torch.stack([circle_x, circle_y], dim=1)
 
     perp = (outer_r - inner_r) / 2 + 15
-    lat = Lattice2D.from_curve_points(curve_pts, n_lines=64, perp_extent=perp, cyclic=True)
+    lat = Lattice2D.from_curve_points(curve_pts, n_lines=256, perp_extent=perp, cyclic=True)
 
     # In lattice u-coordinates:
     #   u = perp_extent → centerline (on the circle at mid_r)
@@ -201,14 +201,14 @@ def figure_synthetic_bagel_seam_pairs():
     lattice_w = int(2 * perp)
     center_u = int(perp)  # centerline of the ring
 
-    # To SHRINK the bagel ring: ROI = ring body, pair = outer background
-    # Removing seams from the ring compresses it; inserting in background compensates.
-    shrink_roi = (center_u - 15, center_u + 15)  # ring body (both sides of centerline)
-    shrink_pair = (lattice_w - 16, lattice_w)     # outer background
+    # Narrow ROI (±5) keeps DP seams straight in flat-energy regions.
+    # Wide ROI lets seams wander, causing scalloped edges.
+    shrink_roi = (center_u - 5, center_u + 5)  # ring body (narrow band around centerline)
+    shrink_pair = (lattice_w - 11, lattice_w)   # outer background
 
     # To GROW the bagel ring: swap — ROI = outer background, pair = ring body
-    grow_roi = (lattice_w - 16, lattice_w)         # outer background
-    grow_pair = (center_u - 15, center_u + 15)     # ring body
+    grow_roi = (lattice_w - 11, lattice_w)         # outer background
+    grow_pair = (center_u - 5, center_u + 5)       # ring body
 
     n_seams = 5
 
@@ -248,13 +248,14 @@ def figure_synthetic_bagel_seam_pairs():
     axes[1].set_title("Energy + Shrink Windows")
     axes[1].set_xlabel("u (radial)")
 
-    # Show seams
-    seam = greedy_seam_windowed(normalize_energy(lattice_energy), shrink_roi)
+    # Show seams — use DP (cyclic-aware since this is a cyclic lattice)
+    norm_energy = normalize_energy(lattice_energy)
+    seam = dp_seam_cyclic(norm_energy, shrink_roi)
     n_idx = np.arange(len(seam))
     axes[2].imshow(lattice_energy.cpu().numpy(), cmap='hot', aspect='auto', alpha=0.6)
-    axes[2].plot(seam.cpu().numpy(), n_idx, 'cyan', linewidth=2, label='ROI seam')
-    pair_seam = greedy_seam_windowed(normalize_energy(lattice_energy), shrink_pair)
-    axes[2].plot(pair_seam.cpu().numpy(), n_idx, 'magenta', linewidth=2, label='Pair seam')
+    axes[2].plot(seam.cpu().numpy(), n_idx, 'cyan', linewidth=2, label='ROI seam (DP cyclic)')
+    pair_seam = dp_seam_cyclic(norm_energy, shrink_pair)
+    axes[2].plot(pair_seam.cpu().numpy(), n_idx, 'magenta', linewidth=2, label='Pair seam (DP cyclic)')
     axes[2].legend()
     axes[2].set_title("Seams in Lattice Space")
 
@@ -301,18 +302,17 @@ def figure_real_bagel_seam_pairs():
     curve_pts = torch.stack([circle_x, circle_y], dim=1)
 
     perp = left_radius * 0.6  # how far scanlines extend
-    lat = Lattice2D.from_curve_points(curve_pts, n_lines=48, perp_extent=perp, cyclic=True)
+    lat = Lattice2D.from_curve_points(curve_pts, n_lines=256, perp_extent=perp, cyclic=True)
 
     lattice_w = int(2 * perp)
     center_u = int(perp)
 
-    # To SHRINK the left bagel: ROI = bagel body, pair = outer background
-    shrink_roi = (center_u - 15, center_u + 15)
-    shrink_pair = (lattice_w - 16, lattice_w)
+    # Narrow ROI (±5) + high scanline count (256) for smooth results
+    shrink_roi = (center_u - 5, center_u + 5)
+    shrink_pair = (lattice_w - 11, lattice_w)
 
-    # To GROW the left bagel: ROI = outer background, pair = bagel body
-    grow_roi = (lattice_w - 16, lattice_w)
-    grow_pair = (center_u - 15, center_u + 15)
+    grow_roi = (lattice_w - 11, lattice_w)
+    grow_pair = (center_u - 5, center_u + 5)
 
     # Show progression of shrinking
     results = [tensor_to_numpy(image)]

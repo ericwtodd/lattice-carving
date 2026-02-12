@@ -6,7 +6,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import torch
 import pytest
-from src.seam import greedy_seam, greedy_seam_windowed, multi_greedy_seam, remove_seam
+from src.seam import (greedy_seam, greedy_seam_windowed, multi_greedy_seam, remove_seam,
+                       dp_seam, dp_seam_windowed, dp_seam_cyclic)
 
 
 class TestGreedySeam:
@@ -115,6 +116,109 @@ class TestWindowedSeam:
         energy[:, 15] = 0.0
         seam = greedy_seam_windowed(energy, (10, 20))
         assert (seam == 15).all(), f"Expected all 15, got {seam.tolist()}"
+
+
+class TestDPSeam:
+    def test_follows_zero_energy_column(self):
+        """DP seam finds the zero-energy column."""
+        H, W = 20, 20
+        energy = torch.ones(H, W)
+        energy[:, 10] = 0.0
+        seam = dp_seam(energy, direction='vertical')
+        assert (seam == 10).all()
+
+    def test_follows_zero_energy_row(self):
+        """DP horizontal seam finds zero-energy row."""
+        H, W = 20, 20
+        energy = torch.ones(H, W)
+        energy[10, :] = 0.0
+        seam = dp_seam(energy, direction='horizontal')
+        assert (seam == 10).all()
+
+    def test_follows_diagonal_valley(self):
+        """DP seam follows a diagonal zero-energy path."""
+        H, W = 20, 20
+        energy = torch.ones(H, W) * 10.0
+        for i in range(H):
+            col = min(5 + i, W - 1)
+            energy[i, col] = 0.0
+        seam = dp_seam(energy, direction='vertical')
+        for i in range(H):
+            expected = min(5 + i, W - 1)
+            assert seam[i].item() == expected
+
+    def test_continuity(self):
+        """Adjacent DP seam indices differ by at most 1."""
+        torch.manual_seed(42)
+        energy = torch.rand(50, 50)
+        seam = dp_seam(energy, direction='vertical')
+        diffs = torch.abs(seam[1:] - seam[:-1])
+        assert diffs.max() <= 1
+
+    def test_optimality_vs_greedy(self):
+        """DP seam total energy <= greedy seam total energy."""
+        torch.manual_seed(123)
+        energy = torch.rand(30, 30)
+        dp = dp_seam(energy)
+        gr = greedy_seam(energy)
+        dp_cost = sum(energy[i, dp[i]].item() for i in range(30))
+        gr_cost = sum(energy[i, gr[i]].item() for i in range(30))
+        assert dp_cost <= gr_cost + 1e-6, f"DP {dp_cost} > greedy {gr_cost}"
+
+    def test_windowed_stays_in_bounds(self):
+        """DP windowed seam stays within column range."""
+        torch.manual_seed(42)
+        energy = torch.rand(30, 30)
+        seam = dp_seam_windowed(energy, (10, 20))
+        assert (seam >= 10).all()
+        assert (seam <= 20).all()
+
+    def test_windowed_finds_valley(self):
+        """DP windowed seam finds zero-energy column in window."""
+        H, W = 20, 30
+        energy = torch.ones(H, W)
+        energy[:, 15] = 0.0
+        seam = dp_seam_windowed(energy, (10, 20))
+        assert (seam == 15).all()
+
+    def test_dp_deterministic_in_uniform_energy(self):
+        """In truly uniform energy, DP produces a deterministic seam (column 0)."""
+        H, W = 50, 30
+        energy = torch.ones(H, W) * 0.5
+        seam = dp_seam(energy)
+        # With perfectly equal costs, argmin returns 0 at every step
+        assert (seam == 0).all(), f"Expected all 0 in uniform energy, got {seam.tolist()}"
+
+
+class TestDPSeamCyclic:
+    def test_seam_closes(self):
+        """Cyclic DP seam starts and ends at the same column."""
+        torch.manual_seed(42)
+        H, W = 40, 30
+        energy = torch.rand(H, W) * 0.5
+        # Add some structure
+        energy[:, 15] = 0.1
+        seam = dp_seam_cyclic(energy, (10, 20))
+        assert seam[0].item() == seam[-1].item(), \
+            f"Seam doesn't close: start={seam[0].item()}, end={seam[-1].item()}"
+
+    def test_stays_in_bounds(self):
+        """Cyclic DP seam stays within column range."""
+        torch.manual_seed(42)
+        H, W = 40, 30
+        energy = torch.rand(H, W)
+        seam = dp_seam_cyclic(energy, (10, 20))
+        assert (seam >= 10).all(), f"Min: {seam.min().item()}"
+        assert (seam <= 20).all(), f"Max: {seam.max().item()}"
+
+    def test_continuity(self):
+        """Adjacent cyclic DP seam indices differ by at most 1."""
+        torch.manual_seed(42)
+        H, W = 40, 30
+        energy = torch.rand(H, W)
+        seam = dp_seam_cyclic(energy, (10, 20))
+        diffs = torch.abs(seam[1:] - seam[:-1])
+        assert diffs.max() <= 1
 
 
 class TestMultiGreedySeam:
