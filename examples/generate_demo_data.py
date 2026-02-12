@@ -27,9 +27,12 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from src.lattice import Lattice2D
-from src.carving import _precompute_forward_mapping, _compute_valid_mask
+from src.carving import (
+    _precompute_forward_mapping, _warp_and_resample,
+    _interpolate_seam, _compute_valid_mask,
+)
 from src.energy import gradient_magnitude_energy, normalize_energy
-from src.seam import dp_seam_windowed, greedy_seam_cyclic, remove_seam, insert_seam
+from src.seam import dp_seam_windowed, greedy_seam_cyclic
 
 
 # ---------------------------------------------------------------------------
@@ -209,9 +212,10 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
                             mode='shrink'):
     """Generate step-by-step seam pair demo data.
 
-    Carves in lattice space: resample image to regular lattice grid, find seams,
-    remove/insert columns directly, then map back to world space for display.
-    This avoids sub-pixel shift discontinuities that split small features.
+    Uses "carving the mapping" (Section 3.3): seams are found in lattice space,
+    but pixel data is always sampled from the original image via cumulative
+    coordinate shifts. This avoids the compounding blur of the naive V->L->V
+    approach (see paper Figure 6).
 
     Works for both cyclic (bagel) and non-cyclic (arch, river) lattices.
 
@@ -223,6 +227,7 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
 
     if mode not in ('shrink', 'grow'):
         raise ValueError(f"Invalid mode: {mode!r}. Must be 'shrink' or 'grow'.")
+    roi_sign = 1.0 if mode == 'shrink' else -1.0
 
     if image.dim() == 2:
         image = image.unsqueeze(0)
@@ -231,8 +236,12 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
     print(f"\n  [{title}] {n_seams} steps, {H}x{W}, {lattice.n_lines} scanlines, "
           f"lattice_w={lattice_w}, cyclic={cyclic}")
 
-    # Precompute forward mapping + valid mask (for world-space compositing)
+    # Precompute forward mapping
     u_map, n_map = _precompute_forward_mapping(lattice, H, W, image.device)
+    original_image = image.clone()
+    cumulative_shift = torch.zeros_like(u_map)
+
+    # Compute valid mask using the shared helper from carving.py
     valid_mask = _compute_valid_mask(lattice, u_map, n_map, H, W, image.device)
     valid_mask_3d = valid_mask.unsqueeze(0).expand(C, -1, -1)
     print(f"    Valid pixels: {valid_mask.sum().item()}/{H*W} "
@@ -261,8 +270,12 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
     lattice_img_np = tensor_to_numpy(lattice_img)
     save_image_clean(lattice_img_np, step_dir / 'lattice_space.png')
 
-    energy = gradient_magnitude_energy(lattice_img)
-    lattice_energy = normalize_energy(energy)
+    energy = gradient_magnitude_energy(image)
+    energy_3d = energy.unsqueeze(0) if energy.dim() == 2 else energy
+    lattice_energy = lattice.resample_to_lattice_space(energy_3d, lattice_w)
+    if lattice_energy.dim() == 3:
+        lattice_energy = lattice_energy.squeeze(0)
+    lattice_energy = normalize_energy(lattice_energy)
     save_energy(lattice_energy, step_dir / 'energy.png')
 
     save_step0_seam_overlay(lattice_img_np, roi_range, pair_range,
@@ -281,17 +294,29 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
     # Choose seam finder
     find_seam = greedy_seam_cyclic if cyclic else dp_seam_windowed
 
-    # --- Seam pair loop (lattice-space carving) ---
+    # --- Seam pair loop (carving the mapping) ---
     for i in range(n_seams):
         step_num = i + 1
         step_dir = output_dir / f'step_{step_num:03d}'
         step_dir.mkdir(exist_ok=True)
 
-        # 1. Compute energy directly on lattice-space image
-        energy = gradient_magnitude_energy(lattice_img)
-        lattice_energy = normalize_energy(energy)
+        # Energy from current warped state
+        if i == 0:
+            energy = gradient_magnitude_energy(original_image)
+        else:
+            raw_warped = _warp_and_resample(
+                original_image, lattice, u_map, n_map, cumulative_shift)
+            current_warped = torch.where(valid_mask_3d, raw_warped, original_image)
+            energy = gradient_magnitude_energy(current_warped)
 
-        # 2. Find seams in lattice space
+        # Resample energy to lattice space + normalize
+        energy_3d = energy.unsqueeze(0) if energy.dim() == 2 else energy
+        lattice_energy = lattice.resample_to_lattice_space(energy_3d, lattice_w)
+        if lattice_energy.dim() == 3:
+            lattice_energy = lattice_energy.squeeze(0)
+        lattice_energy = normalize_energy(lattice_energy)
+
+        # Find seams
         if cyclic:
             roi_seam, roi_guided = find_seam(
                 lattice_energy, roi_range, direction='vertical',
@@ -304,42 +329,45 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
             pair_seam = find_seam(lattice_energy, pair_range, direction='vertical')
             roi_guided = pair_guided = None
 
-        # Save seam overlay BEFORE modifying lattice_img
-        lattice_img_np = tensor_to_numpy(lattice_img)
-        save_seam_overlay(lattice_img_np, roi_seam, pair_seam,
-                          roi_range, pair_range, step_dir / 'seam_overlay.png',
-                          cyclic=cyclic)
+        # Apply shifts — ONLY to valid pixels inside lattice region
+        roi_seam_interp = _interpolate_seam(roi_seam, n_map)
+        pair_seam_interp = _interpolate_seam(pair_seam, n_map)
 
-        # Map seams to world space for visualization
-        xy_roi = seam_to_world(roi_seam, lattice, cyclic=cyclic)
-        xy_pair = seam_to_world(pair_seam, lattice, cyclic=cyclic)
-        all_world_seams.append((xy_roi, xy_pair))
-
-        # 3. Remove ROI seam (shrink ROI by 1 column)
-        if mode == 'shrink':
-            lattice_img = remove_seam(lattice_img, roi_seam, direction='vertical')
-            # Pair seam columns shifted left by 1 since ROI is left of pair
-            pair_seam_adj = pair_seam - 1
-            lattice_img = insert_seam(lattice_img, pair_seam_adj, direction='vertical')
-        else:
-            # grow: insert into ROI, remove from pair
-            lattice_img = insert_seam(lattice_img, roi_seam, direction='vertical')
-            # Pair columns shifted right by 1
-            pair_seam_adj = pair_seam + 1
-            lattice_img = remove_seam(lattice_img, pair_seam_adj, direction='vertical')
-
-        # 5. Map back to world space for display
-        world_img = lattice.resample_from_lattice_space(lattice_img, H, W)
-        carved = torch.where(valid_mask_3d, world_img, image)
+        u_adjusted = u_map + cumulative_shift
+        new_shift = torch.zeros_like(u_map)
+        new_shift += torch.where(u_adjusted >= roi_seam_interp,
+                                 torch.full_like(u_map, roi_sign),
+                                 torch.zeros_like(u_map))
+        new_shift += torch.where(u_adjusted > pair_seam_interp,
+                                 torch.full_like(u_map, -roi_sign),
+                                 torch.zeros_like(u_map))
+        # CRITICAL: Zero out shift for pixels outside the lattice region
+        new_shift = torch.where(valid_mask, new_shift, torch.zeros_like(new_shift))
+        cumulative_shift = cumulative_shift + new_shift
 
         # --- Save outputs ---
+        warped = _warp_and_resample(
+            original_image, lattice, u_map, n_map, cumulative_shift)
+        # Keep original pixels outside the lattice region
+        carved = torch.where(valid_mask_3d, warped, original_image)
         save_image_clean(tensor_to_numpy(carved), step_dir / 'image.png')
-        save_image_clean(tensor_to_numpy(lattice_img), step_dir / 'lattice_space.png')
+
+        lattice_img = lattice.resample_to_lattice_space(carved, lattice_w)
+        lattice_img_np = tensor_to_numpy(lattice_img)
+        save_image_clean(lattice_img_np, step_dir / 'lattice_space.png')
+
         save_energy(lattice_energy, step_dir / 'energy.png')
         if roi_guided is not None:
             save_energy(roi_guided, step_dir / 'energy_guided_roi.png')
             save_energy(pair_guided, step_dir / 'energy_guided_pair.png')
 
+        save_seam_overlay(lattice_img_np, roi_seam, pair_seam,
+                          roi_range, pair_range, step_dir / 'seam_overlay.png',
+                          cyclic=cyclic)
+
+        xy_roi = seam_to_world(roi_seam, lattice, cyclic=cyclic)
+        xy_pair = seam_to_world(pair_seam, lattice, cyclic=cyclic)
+        all_world_seams.append((xy_roi, xy_pair))
         save_world_seam_overlay(tensor_to_numpy(carved), all_world_seams,
                                 step_dir / 'image_seams.png', H, W)
 
