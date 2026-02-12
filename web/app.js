@@ -6,12 +6,13 @@ const energyImg = document.getElementById('energy-image');
 const seamImg = document.getElementById('seam-image');
 const slider = document.getElementById('step-slider');
 const stepLabel = document.getElementById('step-label');
+const showSeamsCheckbox = document.getElementById('show-seams');
 
 function stepDir(step) {
   return `${DEMO_BASE}/step_${String(step).padStart(3, '0')}`;
 }
 
-const IMAGE_TYPES = ['image', 'lattice_space', 'energy', 'seam_overlay'];
+const IMAGE_TYPES = ['image', 'image_seams', 'lattice_space', 'energy', 'seam_overlay'];
 
 // Preloaded Image objects for instant switching
 let imageCache = {};
@@ -28,16 +29,17 @@ function preloadStep(step) {
 }
 
 function showStep(step) {
-  // Use cached images if available, fall back to direct src
+  const showSeams = showSeamsCheckbox.checked;
+  const mainType = showSeams ? 'image_seams' : 'image';
   const cached = imageCache[step];
   if (cached) {
-    mainImg.src = cached['image'].src;
+    mainImg.src = cached[mainType].src;
     latticeImg.src = cached['lattice_space'].src;
     energyImg.src = cached['energy'].src;
     seamImg.src = cached['seam_overlay'].src;
   } else {
     const dir = stepDir(step);
-    mainImg.src = `${dir}/image.png`;
+    mainImg.src = `${dir}/${mainType}.png`;
     latticeImg.src = `${dir}/lattice_space.png`;
     energyImg.src = `${dir}/energy.png`;
     seamImg.src = `${dir}/seam_overlay.png`;
@@ -46,6 +48,10 @@ function showStep(step) {
 }
 
 slider.addEventListener('input', () => {
+  showStep(parseInt(slider.value, 10));
+});
+
+showSeamsCheckbox.addEventListener('change', () => {
   showStep(parseInt(slider.value, 10));
 });
 
@@ -60,6 +66,9 @@ document.addEventListener('keydown', (e) => {
     const next = Math.min(DEMO_STEPS, current + 1);
     slider.value = next;
     showStep(next);
+  } else if (e.key === 's' || e.key === 'S') {
+    showSeamsCheckbox.checked = !showSeamsCheckbox.checked;
+    showStep(current);
   }
 });
 

@@ -54,11 +54,14 @@ main {
   background: #111;
 }
 
+.controls {
+  padding: 0.8rem 0 0;
+}
+
 .slider-container {
   display: flex;
   align-items: center;
   gap: 1rem;
-  padding: 0.8rem 0 0;
 }
 
 .slider-container input[type="range"] {
@@ -95,6 +98,24 @@ main {
   color: #aaa;
   white-space: nowrap;
   min-width: 90px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #aaa;
+  user-select: none;
+}
+
+.toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #00d4aa;
+  cursor: pointer;
 }
 
 /* Right panel: three diagnostic images */

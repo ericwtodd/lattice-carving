@@ -7,7 +7,7 @@ intermediate state (lattice-space image, energy, seam overlays) at each step.
 Output structure:
     demo_data/synthetic_bagel/
         metadata.json
-        step_000/image.png, lattice_space.png, energy.png, seam_overlay.png
+        step_000/image.png, image_seams.png, lattice_space.png, energy.png, seam_overlay.png
         step_001/...
         ...
 
@@ -77,6 +77,50 @@ def save_seam_overlay(lattice_img_np, roi_seam, pair_seam, roi_range, pair_range
     ax.set_ylim(n_lines, 0)
     ax.axis('off')
 
+    fig.savefig(str(path), dpi=150, bbox_inches='tight', pad_inches=0)
+    plt.close(fig)
+
+
+def seam_to_world(seam, lattice):
+    """Map a lattice-space seam (u per scanline) to world-space (x, y) points.
+
+    Args:
+        seam: (n_lines,) tensor of u-coordinates per scanline
+        lattice: Lattice2D structure
+
+    Returns:
+        xy: (n_lines, 2) numpy array of (x, y) world-space coordinates
+    """
+    n_lines = seam.shape[0]
+    n_coords = torch.arange(n_lines, dtype=torch.float32, device=seam.device)
+    lattice_pts = torch.stack([seam.float(), n_coords], dim=1)  # (n_lines, 2)
+    world_pts = lattice.inverse_mapping(lattice_pts)  # (n_lines, 2)
+    return world_pts.cpu().numpy()
+
+
+def save_world_seam_overlay(image_np, all_seams, path, H, W):
+    """Save world-space image with all cumulative seam curves drawn on top.
+
+    Args:
+        image_np: (H, W, 3) numpy array
+        all_seams: list of (xy_roi, xy_pair) world-space coordinate arrays
+        path: output path
+        H, W: image dimensions for figure sizing
+    """
+    fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+    ax.imshow(image_np, interpolation='bilinear')
+
+    for step_idx, (xy_roi, xy_pair) in enumerate(all_seams):
+        # Fade older seams: newest is fully opaque, oldest is semi-transparent
+        alpha = 0.3 + 0.7 * (step_idx + 1) / len(all_seams)
+        ax.plot(xy_roi[:, 0], xy_roi[:, 1], color='cyan', linewidth=1.5,
+                alpha=alpha)
+        ax.plot(xy_pair[:, 0], xy_pair[:, 1], color='magenta', linewidth=1.5,
+                alpha=alpha)
+
+    ax.set_xlim(0, W)
+    ax.set_ylim(H, 0)
+    ax.axis('off')
     fig.savefig(str(path), dpi=150, bbox_inches='tight', pad_inches=0)
     plt.close(fig)
 
@@ -178,8 +222,14 @@ def generate_demo(output_dir: Path, H=600, W=600, n_scanlines=256, n_seams=18):
     fig.savefig(str(step_dir / 'seam_overlay.png'), dpi=150, bbox_inches='tight', pad_inches=0)
     plt.close(fig)
 
+    # Step 0: no seams yet — save plain image as image_seams.png too
+    save_image_clean(tensor_to_numpy(image), step_dir / 'image_seams.png')
+
     metadata['steps'].append({'step': 0, 'roi_seam': None, 'pair_seam': None})
     print(f"  Step 0 (original) saved")
+
+    # Track all seams in world space for cumulative overlay
+    all_world_seams = []
 
     # --- Seam pair loop (inlined from carve_seam_pairs) ---
     for i in range(n_seams):
@@ -240,6 +290,13 @@ def generate_demo(output_dir: Path, H=600, W=600, n_scanlines=256, n_seams=18):
         # Seam overlay on lattice-space color image
         save_seam_overlay(lattice_img_np, roi_seam, pair_seam,
                           roi_range, pair_range, step_dir / 'seam_overlay.png')
+
+        # World-space seam overlay (cumulative — all seams up to this step)
+        xy_roi = seam_to_world(roi_seam, lat)
+        xy_pair = seam_to_world(pair_seam, lat)
+        all_world_seams.append((xy_roi, xy_pair))
+        save_world_seam_overlay(tensor_to_numpy(carved), all_world_seams,
+                                step_dir / 'image_seams.png', H, W)
 
         metadata['steps'].append({
             'step': step_num,
