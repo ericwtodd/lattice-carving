@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>Lattice-Guided Seam Pair Carving</h1>
-    <p class="subtitle">Flynn et al. 2021 &mdash; Synthetic Bagel Ring Shrinking</p>
+    <p class="subtitle">Flynn et al. 2021</p>
   </header>
 
   <main>
@@ -20,10 +20,13 @@
           <input type="range" id="step-slider" min="0" max="0" value="0">
           <span id="step-label">Step: 0 / 0</span>
         </div>
-        <label class="toggle">
-          <input type="checkbox" id="show-seams">
-          <span>Show seams</span>
-        </label>
+        <div class="control-row">
+          <select id="demo-select"></select>
+          <label class="toggle">
+            <input type="checkbox" id="show-seams">
+            <span>Show seams</span>
+          </label>
+        </div>
       </div>
     </div>
 
