@@ -27,7 +27,10 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from src.lattice import Lattice2D
-from src.carving import _precompute_forward_mapping, _warp_and_resample, _interpolate_seam
+from src.carving import (
+    _precompute_forward_mapping, _warp_and_resample,
+    _interpolate_seam, _compute_valid_mask,
+)
 from src.energy import gradient_magnitude_energy, normalize_energy
 from src.seam import dp_seam_cyclic, dp_seam_windowed
 
@@ -103,10 +106,15 @@ def seam_to_world(seam, lattice, cyclic=False):
 
 
 def save_world_seam_overlay(image_np, all_seams, path, H, W):
-    """Save world-space image with cumulative seam curves drawn on top."""
-    fig_w = 6 * W / max(H, W)
-    fig_h = 6 * H / max(H, W)
-    fig, ax = plt.subplots(1, 1, figsize=(fig_w, fig_h))
+    """Save world-space image with cumulative seam curves drawn on top.
+
+    Uses fixed pixel-based figure size to guarantee output matches input dimensions.
+    """
+    dpi = 150
+    fig_w = W / dpi
+    fig_h = H / dpi
+    fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
+    ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure, no padding
     ax.imshow(image_np, interpolation='bilinear')
 
     for step_idx, (xy_roi, xy_pair) in enumerate(all_seams):
@@ -116,10 +124,10 @@ def save_world_seam_overlay(image_np, all_seams, path, H, W):
         ax.plot(xy_pair[:, 0], xy_pair[:, 1], color='magenta', linewidth=1.5,
                 alpha=alpha)
 
-    ax.set_xlim(0, W)
-    ax.set_ylim(H, 0)
+    ax.set_xlim(-0.5, W - 0.5)
+    ax.set_ylim(H - 0.5, -0.5)
     ax.axis('off')
-    fig.savefig(str(path), dpi=150, bbox_inches='tight', pad_inches=0)
+    fig.savefig(str(path), dpi=dpi, pad_inches=0)
     plt.close(fig)
 
 
@@ -143,15 +151,24 @@ def save_step0_seam_overlay(lattice_img_np, roi_range, pair_range, path, n_lines
 # Generic seam-pair demo generator
 # ---------------------------------------------------------------------------
 
-def save_lattice_overlay(image_np, lattice, lattice_w, path, H, W, n_scanlines=16, n_u=12):
-    """Save world-space image with lattice grid drawn on top."""
-    fig_w = 6 * W / max(H, W)
-    fig_h = 6 * H / max(H, W)
-    fig, ax = plt.subplots(1, 1, figsize=(fig_w, fig_h))
+def save_lattice_overlay(image_np, lattice, lattice_w, path, H, W,
+                         n_scanlines=48, n_u=12,
+                         roi_range=None, pair_range=None):
+    """Save world-space image with lattice grid drawn on top.
+
+    Optionally draws ROI boundary curves (cyan) and pair boundary curves (magenta).
+    """
+    dpi = 150
+    fig_w = W / dpi
+    fig_h = H / dpi
+    fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
+    ax = fig.add_axes([0, 0, 1, 1])  # Fill entire figure, no padding
     ax.imshow(image_np, interpolation='bilinear')
 
+    n_max = lattice.n_lines
+
     # Draw scanlines (constant n)
-    for i in range(0, lattice.n_lines, max(1, lattice.n_lines // n_scanlines)):
+    for i in range(0, n_max, max(1, n_max // n_scanlines)):
         u_vals = torch.linspace(0, float(lattice_w), 80)
         n_val = float(i)
         pts = torch.stack([u_vals, torch.full_like(u_vals, n_val)], dim=1)
@@ -159,27 +176,53 @@ def save_lattice_overlay(image_np, lattice, lattice_w, path, H, W, n_scanlines=1
         ax.plot(world_pts[:, 0], world_pts[:, 1], 'cyan', alpha=0.4, linewidth=0.7)
 
     # Draw perpendicular lines (constant u)
-    n_max = lattice.n_lines
     for u_val in np.linspace(0, lattice_w, n_u):
         n_vals = torch.linspace(0, float(n_max - 1), 100)
         pts = torch.stack([torch.full_like(n_vals, u_val), n_vals], dim=1)
         world_pts = lattice.inverse_mapping(pts).cpu().numpy()
         ax.plot(world_pts[:, 0], world_pts[:, 1], 'yellow', alpha=0.3, linewidth=0.7)
 
-    ax.set_xlim(0, W)
-    ax.set_ylim(H, 0)
+    # Draw ROI boundaries (constant u at roi endpoints) in cyan dashed
+    if roi_range is not None:
+        for u_val in roi_range:
+            n_vals = torch.linspace(0, float(n_max - 1), 200)
+            pts = torch.stack([torch.full_like(n_vals, float(u_val)), n_vals], dim=1)
+            world_pts = lattice.inverse_mapping(pts).cpu().numpy()
+            ax.plot(world_pts[:, 0], world_pts[:, 1], 'cyan',
+                    linestyle='--', alpha=0.8, linewidth=1.5)
+
+    # Draw pair boundaries (constant u at pair endpoints) in magenta dashed
+    if pair_range is not None:
+        for u_val in pair_range:
+            n_vals = torch.linspace(0, float(n_max - 1), 200)
+            pts = torch.stack([torch.full_like(n_vals, float(u_val)), n_vals], dim=1)
+            world_pts = lattice.inverse_mapping(pts).cpu().numpy()
+            ax.plot(world_pts[:, 0], world_pts[:, 1], 'magenta',
+                    linestyle='--', alpha=0.8, linewidth=1.5)
+
+    ax.set_xlim(-0.5, W - 0.5)
+    ax.set_ylim(H - 0.5, -0.5)
     ax.axis('off')
-    fig.savefig(str(path), dpi=150, bbox_inches='tight', pad_inches=0)
+    fig.savefig(str(path), dpi=dpi, pad_inches=0)
     plt.close(fig)
 
 
 def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
-                            roi_range, pair_range, n_seams, cyclic, title):
+                            roi_range, pair_range, n_seams, cyclic, title,
+                            mode='shrink'):
     """Generate step-by-step seam pair demo data.
 
     Works for both cyclic (bagel) and non-cyclic (arch, river) lattices.
+
+    Args:
+        mode: 'shrink' to compress ROI / expand pair,
+              'grow' to expand ROI / compress pair.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if mode not in ('shrink', 'grow'):
+        raise ValueError(f"Invalid mode: {mode!r}. Must be 'shrink' or 'grow'.")
+    roi_sign = 1.0 if mode == 'shrink' else -1.0
 
     if image.dim() == 2:
         image = image.unsqueeze(0)
@@ -193,18 +236,8 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
     original_image = image.clone()
     cumulative_shift = torch.zeros_like(u_map)
 
-    # Validity mask: pixels actually inside the lattice region.
-    # forward_mapping projects ALL pixels onto some scanline, even distant ones.
-    # Use roundtrip test: forward -> inverse -> compare with original position.
-    # Pixels inside the lattice region roundtrip accurately; distant pixels don't.
-    y_coords = torch.arange(H, dtype=torch.float32, device=image.device)
-    x_coords = torch.arange(W, dtype=torch.float32, device=image.device)
-    y_grid, x_grid = torch.meshgrid(y_coords, x_coords, indexing='ij')
-    world_pts = torch.stack([x_grid.reshape(-1), y_grid.reshape(-1)], dim=1)
-    lattice_pts = torch.stack([u_map.reshape(-1), n_map.reshape(-1)], dim=1)
-    roundtrip_pts = lattice.inverse_mapping(lattice_pts)
-    roundtrip_err = torch.sqrt(((world_pts - roundtrip_pts)**2).sum(dim=1)).reshape(H, W)
-    valid_mask = roundtrip_err < 3.0  # pixels that map cleanly through the lattice
+    # Compute valid mask using the shared helper from carving.py
+    valid_mask = _compute_valid_mask(lattice, u_map, n_map, H, W, image.device)
     valid_mask_3d = valid_mask.unsqueeze(0).expand(C, -1, -1)
     print(f"    Valid pixels: {valid_mask.sum().item()}/{H*W} "
           f"({100*valid_mask.float().mean():.1f}%)")
@@ -244,7 +277,8 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
                             step_dir / 'seam_overlay.png', lattice.n_lines)
 
     save_lattice_overlay(tensor_to_numpy(image), lattice, lattice_w,
-                         step_dir / 'image_lattice.png', H, W)
+                         step_dir / 'image_lattice.png', H, W,
+                         roi_range=roi_range, pair_range=pair_range)
 
     metadata['steps'].append({'step': 0})
     print(f"    Step 0 (original)")
@@ -281,24 +315,26 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
         roi_seam = find_seam(lattice_energy, roi_range, direction='vertical')
         pair_seam = find_seam(lattice_energy, pair_range, direction='vertical')
 
-        # Apply shifts (only to valid pixels inside lattice region)
+        # Apply shifts — ONLY to valid pixels inside lattice region
         roi_seam_interp = _interpolate_seam(roi_seam, n_map)
         pair_seam_interp = _interpolate_seam(pair_seam, n_map)
 
         u_adjusted = u_map + cumulative_shift
         new_shift = torch.zeros_like(u_map)
         new_shift += torch.where(u_adjusted >= roi_seam_interp,
-                                 torch.ones_like(u_map), torch.zeros_like(u_map))
+                                 torch.full_like(u_map, roi_sign),
+                                 torch.zeros_like(u_map))
         new_shift += torch.where(u_adjusted > pair_seam_interp,
-                                 -torch.ones_like(u_map), torch.zeros_like(u_map))
-        # Zero out shift for pixels outside the lattice region
+                                 torch.full_like(u_map, -roi_sign),
+                                 torch.zeros_like(u_map))
+        # CRITICAL: Zero out shift for pixels outside the lattice region
         new_shift = torch.where(valid_mask, new_shift, torch.zeros_like(new_shift))
         cumulative_shift = cumulative_shift + new_shift
 
         # --- Save outputs ---
         warped = _warp_and_resample(
             original_image, lattice, u_map, n_map, cumulative_shift)
-        # ROI masking: keep original pixels outside the lattice region
+        # Keep original pixels outside the lattice region
         carved = torch.where(valid_mask_3d, warped, original_image)
         save_image_clean(tensor_to_numpy(carved), step_dir / 'image.png')
 
@@ -319,7 +355,8 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
                                 step_dir / 'image_seams.png', H, W)
 
         save_lattice_overlay(tensor_to_numpy(carved), lattice, lattice_w,
-                             step_dir / 'image_lattice.png', H, W)
+                             step_dir / 'image_lattice.png', H, W,
+                             roi_range=roi_range, pair_range=pair_range)
 
         metadata['steps'].append({
             'step': step_num,
@@ -367,19 +404,20 @@ def setup_synthetic_bagel():
     circle_y = cy + mid_r * torch.sin(theta)
     curve_pts = torch.stack([circle_x, circle_y], dim=1)
 
-    perp = (outer_r - inner_r) / 2 + 15
+    perp = (outer_r - inner_r) / 2 + 45  # 120 — wider to cover more background
     lattice = Lattice2D.from_curve_points(
         curve_pts, n_lines=1024, perp_extent=perp, cyclic=True)
 
-    lattice_w = int(2 * perp)
-    center_u = int(perp)
-    roi_range = (center_u - 5, center_u + 5)
-    pair_range = (lattice_w - 11, lattice_w)
+    lattice_w = int(2 * perp)       # 240
+    center_u = int(perp)            # 120
+    ring_half = (outer_r - inner_r) / 2  # 75
+    # Full ring body as ROI (150 cols), pair in outer background (45 cols)
+    roi_range = (int(center_u - ring_half), int(center_u + ring_half))
+    pair_range = (int(center_u + ring_half), lattice_w)
 
     return dict(image=image, lattice=lattice, lattice_w=lattice_w,
                 roi_range=roi_range, pair_range=pair_range,
-                n_seams=18, cyclic=True,
-                title='Synthetic Bagel — Shrink Ring Body')
+                n_seams=20, cyclic=True)
 
 
 def setup_arch():
@@ -402,7 +440,6 @@ def setup_arch():
     image += (torch.rand(3, H, W) - 0.5) * 0.05
     image = image.clamp(0, 1)
 
-    # Lattice follows the arch centerline
     angles = torch.linspace(np.pi, 0, 200)
     mid_r = (inner_r + outer_r) / 2
     arch_x = cx + mid_r * torch.cos(angles)
@@ -415,14 +452,12 @@ def setup_arch():
 
     lattice_w = int(2 * perp)
     center_u = int(perp)
-    # ROI: arch body around centerline; pair: outer background
     roi_range = (center_u - 8, center_u + 8)
     pair_range = (lattice_w - 20, lattice_w)
 
     return dict(image=image, lattice=lattice, lattice_w=lattice_w,
                 roi_range=roi_range, pair_range=pair_range,
-                n_seams=15, cyclic=False,
-                title='Arch — Thin the Arch Body')
+                n_seams=15, cyclic=False)
 
 
 def setup_river():
@@ -430,17 +465,14 @@ def setup_river():
     H, W = 400, 600
     band_width = 60
 
-    # River centerline: sinusoidal
     x_vals = torch.linspace(0, W, 200, dtype=torch.float32)
     y_vals = H / 2 + 60 * torch.sin(2 * np.pi * x_vals / W)
     curve_pts = torch.stack([x_vals, y_vals], dim=1)
 
-    # Create image: blue river on green background
     y = torch.arange(H, dtype=torch.float32)
     x = torch.arange(W, dtype=torch.float32)
     yy, xx = torch.meshgrid(y, x, indexing='ij')
 
-    # Distance from each pixel to the curve
     curve_np = curve_pts.numpy()
     xx_np = xx.numpy()
     yy_np = yy.numpy()
@@ -452,11 +484,9 @@ def setup_river():
 
     river_mask = min_dist_t < band_width
     image = torch.zeros(3, H, W)
-    # Green background
     image[0] = 0.25
     image[1] = 0.50
     image[2] = 0.20
-    # Blue river
     image[0][river_mask] = 0.15
     image[1][river_mask] = 0.35
     image[2][river_mask] = 0.75
@@ -470,14 +500,12 @@ def setup_river():
 
     lattice_w = int(2 * perp)
     center_u = int(perp)
-    # ROI: river center; pair: background one side
     roi_range = (center_u - 10, center_u + 10)
     pair_range = (lattice_w - 25, lattice_w)
 
     return dict(image=image, lattice=lattice, lattice_w=lattice_w,
                 roi_range=roi_range, pair_range=pair_range,
-                n_seams=15, cyclic=False,
-                title='River — Narrow the Stream')
+                n_seams=15, cyclic=False)
 
 
 # ---------------------------------------------------------------------------
@@ -508,9 +536,12 @@ if __name__ == '__main__':
     demo_dir = project_root / 'demo_data'
 
     all_demos = [
-        ('synthetic_bagel', setup_synthetic_bagel()),
-        ('arch', setup_arch()),
-        ('river', setup_river()),
+        ('synthetic_bagel_shrink', {**setup_synthetic_bagel(), 'mode': 'shrink', 'title':'Synthetic Bagel -- Shrink'}),
+        # ('synthetic_bagel_grow',   {**setup_synthetic_bagel(), 'mode': 'grow', 'title':'Synthetic Bagel -- Grow'}),
+        # ('arch_shrink', {**setup_arch(), 'mode': 'shrink', 'title':'Arch -- Shrink'}),
+        # ('arch_grow', {**setup_arch(), 'mode':'grow', 'title':'Arch -- Grow'}),
+        # ('river_shrink', {**setup_river(), 'mode': 'shrink', 'title':'River -- Shrink'}),
+        # ('river_grow', {**setup_river(), 'mode': 'grow', 'title':'River -- Grow'})
     ]
 
     results = []

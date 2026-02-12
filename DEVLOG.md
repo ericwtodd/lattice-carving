@@ -112,6 +112,44 @@ Initially implemented "shrink the hole" by mistake — user clarified they want 
 
 ---
 
+## 2026-02-12: Widen Lattice Regions for Bagel Demo
+
+### Problem
+
+The synthetic bagel demo had a very tight ROI: 20 columns for 18 seams (90% compression). The pair region was only 21 columns. This caused later seams to operate in increasingly degenerate energy fields, contributing to sawtooth artifacts.
+
+### Changes
+
+Widened `perp_extent` from 90 to 120 in `setup_synthetic_bagel()`:
+
+```
+Before: perp=90, lattice_w=180
+  ROI: (80, 100) — 20 cols for 18 seams
+  Pair: (159, 180) — 21 cols
+
+After: perp=120, lattice_w=240
+  ROI: (45, 195) — 150 cols for 20 seams (full ring body)
+  Pair: (195, 240) — 45 cols (outer background)
+
+Layout:
+  u=0          u=45         u=120         u=195       u=240
+  |--hole bgnd--|--------- ring body ---------|--outer bgnd--|
+     45 cols    |<-------- ROI (150) -------->|<-pair (45)->|
+```
+
+Also improved the lattice overlay visualization:
+- Increased default `n_scanlines` from 16 to 48 for denser grid
+- Added ROI boundary curves (cyan dashed) and pair boundary curves (magenta dashed) in world-space overlays
+
+### Rationale
+
+- Full ring body as ROI gives seams 150 columns to work with (7.5x headroom for 20 seams)
+- Pair region in outer background has 45 columns (2.25x headroom for 20 seams)
+- Wider lattice coverage means more background is available for compensation
+- Denser overlay + boundary visualization makes it easier to inspect lattice alignment
+
+---
+
 ## Next Steps
 
 ### Sawtooth artifacts investigation — RESOLVED
@@ -146,3 +184,79 @@ Initially implemented "shrink the hole" by mistake — user clarified they want 
 ### Next: browser demo
 
 Pre-compute carving iterations as JSON, build static HTML/JS viewer with seam count slider.
+
+---
+
+## 2026-02-12: Recent Changes, Bug Fixes, and Sawtooth Analysis
+
+### Changes made (explored by user)
+
+1. **Grow/shrink mode for `carve_seam_pairs`**: Added `mode` parameter ('shrink' or 'grow') to both `carve_seam_pairs()` in `src/carving.py` and `generate_seam_pair_demo()`. Uses `roi_sign` (+1 for shrink, -1 for grow) to flip which region compresses vs expands. This enables the side-by-side shrink/original/grow comparison GIFs.
+
+2. **Extracted `_compute_valid_mask()` helper**: The roundtrip validity test (forward → inverse → check position error) was duplicated in `generate_demo_data.py` and implicitly needed in `carving.py`. Now a shared function in `carving.py` with a configurable `threshold` parameter (default 3.0 pixels).
+
+3. **Valid mask applied in carving pipelines**: Both `carve_image_lattice_guided()` and `carve_seam_pairs()` now zero out shifts for invalid pixels and composite warped results over the original. This prevents nonsensical shifts on pixels far from the lattice.
+
+4. **Wider ROI/pair ranges for bagel**: Changed from (center±5, last 11) to (center±10, last 21). Still tight — see analysis below.
+
+5. **Figure sizing for overlays**: Switched `save_world_seam_overlay()` and `save_lattice_overlay()` from aspect-ratio-based sizing with `bbox_inches='tight'` to pixel-exact DPI-based sizing with `fig.add_axes([0, 0, 1, 1])`.
+
+6. **GIF generators**: Two new scripts in `web/`:
+   - `generate_seam_carving_gif.py` — single-demo animated GIF from step images
+   - `generate_gif_comparison.py` — side-by-side shrink/original/grow comparison
+
+7. **Comment cleanup**: Stripped verbose docstrings and inline comments from `src/carving.py` to reduce noise.
+
+### Bug fix: white line at bottom of overlay images
+
+**Symptom**: `image_seams.png` and `image_lattice.png` had an all-white (255) bottom pixel row, visible in the web viewer when toggling off seams/lattice overlays.
+
+**Root cause**: `ax.set_ylim(H, 0)` in the matplotlib overlay functions. Matplotlib `imshow` places pixel centers at integer coordinates, so the image extends from y=-0.5 to y=H-0.5. Setting ylim to H leaves a 0.5-pixel gap of white figure background at the bottom.
+
+**Fix**: Changed to `ax.set_ylim(H - 0.5, -0.5)` and `ax.set_xlim(-0.5, W - 0.5)` in both `save_world_seam_overlay()` and `save_lattice_overlay()`.
+
+### DP seam quality analysis with real data
+
+Analyzed seam metadata from the synthetic bagel shrink demo (18 steps, 1024 scanlines, ROI [80,100], pair [159,180]):
+
+- **max_jump = 1** on all seams (correct — DP guarantees 8-connectivity)
+- **mean_jump ≈ 0.63–0.68** — seams change column ~65% of the time
+- ROI seams cluster toward the upper end of the window (near u=100)
+- Pair seams are more consistent (range [166–178])
+
+The seams are *individually* smooth (no jumps > 1 pixel) but *collectively* zigzaggy because the flat-energy ring body has many equally-optimal paths. The cumulative effect of 18 independent zigzaggy seams creates a noisy shift field, producing the sawtooth pattern in the warped image.
+
+### Region tightness problem
+
+Current configuration: **ROI = 20 columns wide, 18 seams = only 2 columns of headroom**.
+
+After 18 shrink operations, the ROI content has been compressed into just 2 effective lattice columns. This means:
+- Later seams are finding paths through increasingly compressed (duplicated) content
+- The energy field in the ROI becomes nearly uniform, making seam paths arbitrary
+- The pair region (21 columns for 18 expansions) is similarly tight — content gets stretched significantly
+
+**The regions do NOT need explicit repositioning** after each step because the energy is resampled from the warped image each iteration, which already reflects all prior shifts. The seam finder sees the current state of the content, not the original. The roi_range/pair_range stay fixed in lattice coordinates, which is correct.
+
+**However, the regions need to be wider** to avoid exhausting the available space. Recommendation: ROI should be at least 2–3x the number of seams (40–60 columns for 18 seams).
+
+### Root causes of sawtooth (updated understanding)
+
+Three factors combine:
+
+1. **Flat energy in ring body**: Gradient magnitude ≈ 0 across the uniform-color ring. DP picks through noise, producing zigzaggy seams even though they're technically optimal.
+
+2. **Tight ROI**: 20 columns for 18 seams leaves no room. Later seams are forced into a shrinking effective space with increasingly degenerate energy.
+
+3. **Independent seam paths**: Each iteration finds a new seam independently. Since the energy is flat, successive seams don't align, creating an irregular cumulative shift field.
+
+### Potential improvements to try (ordered by expected impact)
+
+1. **Wider ROI + pair regions** — Simple config change, reduces crowding. Try (center±25, last 51) for 18 seams.
+
+2. **Energy smoothing / blur before DP** — Gaussian blur on the lattice-space energy map before seam finding. Smooths out noise, encouraging straighter seams in flat regions. The paper mentions this in Section 4.
+
+3. **Forward energy instead of gradient magnitude** — `forward_energy()` penalizes the cost of *creating new edges* when a pixel is removed, not just the current gradient. This gives non-zero costs even in flat regions (removing a pixel in a flat area still creates a visible seam). Already implemented in `src/energy.py` but not wired into the carving pipeline.
+
+4. **Seam guide / straightness prior** — Add a penalty for lateral movement in the DP cost. Something like `M[i] = energy[i] + min(neighbors) + lambda * |col_shift|`. This biases toward straight vertical seams in flat energy.
+
+5. **Ordered seam removal** — Instead of finding one seam per iteration, find multiple seams in a single DP pass (like Avidan & Shamir's k-seam method) to ensure they don't overlap and are well-distributed.
