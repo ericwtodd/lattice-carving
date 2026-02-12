@@ -75,6 +75,10 @@ Run `python examples/reproduce_figures.py` to generate comparison images in `out
 - **Synthetic bagel seam pairs** (Figure 10) — shrink/grow ring body with cyclic lattice
 - **Real double-bagel seam pairs** — shrink/grow left bagel half independently
 
+<p align="left">
+<img src="web/assets/river_comparison.gif" style="width:100%;"/>
+</p> 
+
 ## References
 
 - Flynn, S., Hart, D., Morse, B., Holladay, S., & Egbert, P. (2021). Generalized Fluid Carving with Fast Lattice-Guided Seam Computation. *ACM Trans. Graph.*, 40(6), Article 255.
