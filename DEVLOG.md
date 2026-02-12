@@ -95,5 +95,16 @@ Initially implemented "shrink the hole" by mistake — user clarified they want 
 
 ## Next Steps
 
-1. **DP seam finding** — Standard Avidan & Shamir 2007 algorithm: fill cumulative cost matrix top-to-bottom, backtrack to find optimal seam. Should eliminate sawtooth artifacts on bagel.
-2. **Browser demo** — Pre-compute carving iterations as JSON, build static HTML/JS viewer with seam count slider.
+### Fix sawtooth artifacts (before demo)
+
+Two issues compound to create the sawtooth artifacts on bagel seam pairs:
+
+1. **DP seam finding** — The primary fix. Standard Avidan & Shamir 2007 algorithm: fill cumulative cost matrix top-to-bottom, backtrack to find globally optimal seam. In flat-energy regions (uniform bagel body), DP produces smooth/straight seams instead of random-walk wandering. For 2D images, DP = graph-cut quality at O(H * W) cost.
+
+2. **Cyclic-aware seams in seam pairs** — Currently `carve_seam_pairs()` calls `greedy_seam_windowed()` which is NOT cyclic-aware. For cyclic lattices, scanline 0 and scanline N-1 are adjacent in world space (they wrap around), but the seam treats them as disconnected endpoints. This creates a visible discontinuity at the wrap point. Need to either: (a) use `greedy_seam_cyclic()` (Gaussian guide) in the seam pairs pipeline when the lattice is cyclic, or (b) implement DP with cyclic constraint (seam[0] == seam[N-1]).
+
+Grid resolution (48-64 scanlines) is probably NOT a factor — artifacts are much larger than the angular step. Easy to verify by bumping to 128.
+
+### Then: browser demo
+
+Pre-compute carving iterations as JSON, build static HTML/JS viewer with seam count slider.
