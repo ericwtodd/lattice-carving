@@ -4,6 +4,71 @@ Research and implementation notes for the lattice carving project.
 
 ---
 
+## 2026-02-12: Fix Cumulative Shift Bug — Switch to Iterative Warping
+
+### Bug discovered: incorrect multi-seam shift composition
+
+The "carving the mapping" implementation (Section 3.3) had a correctness bug. The
+code accumulated u-coordinate shifts across all seam iterations and applied a single
+final warp from the original image:
+
+```python
+# OLD (buggy): cumulative shift from original
+cumulative_shift += where(u_map + cumulative_shift >= seam, 1, 0)
+# ... after loop:
+warp(original_image, cumulative_shift)
+```
+
+The problem: composing multiple g\* mappings is **not simply additive**. Each shift
+interacts with previous shifts in a position-dependent way. The correct composition
+from the paper (Eq. 4) is:
+
+```
+total_shift(u) = shift_n(u) + shift_{n-1}(u + shift_n(u)) + ...
+```
+
+**Concrete failure**: With seam1=50 and seam2=49, pixel at u=49 should sample from
+original u=51 (shift=2). The old code produced shift=1 (off by one). These errors
+compound with each additional seam, creating jagged boundaries at seam positions.
+
+For single-seam carving (n_seams=1), the old code was correct. The bug only appeared
+with multiple seams.
+
+### Fix: iterative warping (paper's actual approach)
+
+Replaced cumulative shifts with iterative warping — each iteration reads from the
+*current* image state and applies a single-step shift:
+
+```python
+# NEW (correct): iterative warp from current state
+for i in range(n_seams):
+    shift = where(u_map >= seam, 1, 0)
+    current_image = warp(current_image, shift)
+```
+
+This matches the paper's Section 3.3 / Fig. 8 exactly: "the values in V are updated
+using a carved mapping into a copy of V." Each iteration introduces one bilinear
+interpolation (N total for N seams), which the paper considers acceptable (Section
+6.1).
+
+Also fixed `_interpolate_seam()` for cyclic lattices — was clamping `n_ceil` to
+`n_lines - 1` instead of wrapping with modular arithmetic.
+
+### Test suite simplified
+
+Removed tests that validated implementation details of the (now-removed) cumulative
+shift approach. Kept behavioral tests: identity (zero seams), output sanity,
+boundary preservation (seam pairs), dimension preservation.
+
+### Visual results
+
+All demo outputs regenerated. The sawtooth artifacts on the synthetic bagel persist
+at 200px / 256 scanlines — this is a resolution/aliasing issue (see resolution sweep
+analysis below), not a shift composition issue. The fix eliminates compounding
+off-by-one errors that would worsen with more seams and non-adjacent seam positions.
+
+---
+
 ## 2026-02-11: Visual Validation & Seam Quality Discovery
 
 ### What was validated
