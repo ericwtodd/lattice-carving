@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Curve Drawer — Lattice Carving</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #1a1a2e; color: #e0e0e0;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh; padding: 20px;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 12px; color: #00d4ff; }
+  .controls {
+    display: flex; gap: 12px; align-items: center;
+    flex-wrap: wrap; justify-content: center;
+    margin-bottom: 12px;
+  }
+  .controls label { font-size: 0.85rem; }
+  .controls input[type="file"] { font-size: 0.85rem; }
+  .controls input[type="range"] { width: 100px; }
+  button {
+    padding: 6px 16px; border: none; border-radius: 4px;
+    font-size: 0.85rem; cursor: pointer;
+    background: #16213e; color: #e0e0e0; border: 1px solid #0f3460;
+    transition: background 0.2s;
+  }
+  button:hover { background: #0f3460; }
+  button.primary { background: #00d4ff; color: #1a1a2e; font-weight: 600; }
+  button.primary:hover { background: #00b8d4; }
+  button.danger { background: #e94560; color: #fff; }
+  button.danger:hover { background: #c0392b; }
+  .canvas-wrap {
+    position: relative; border: 2px solid #0f3460; border-radius: 4px;
+    overflow: hidden; background: #111;
+  }
+  canvas { display: block; cursor: crosshair; }
+  .info {
+    margin-top: 10px; font-size: 0.8rem; color: #888;
+    text-align: center; max-width: 700px;
+  }
+  .json-output {
+    margin-top: 12px; width: 100%; max-width: 700px;
+  }
+  .json-output textarea {
+    width: 100%; height: 100px; background: #16213e; color: #00d4ff;
+    border: 1px solid #0f3460; border-radius: 4px; padding: 8px;
+    font-family: monospace; font-size: 0.8rem; resize: vertical;
+  }
+  #status { font-size: 0.8rem; color: #ffd700; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Curve Drawer</h1>
+
+<div class="controls">
+  <input type="file" id="fileInput" accept="image/*">
+  <label>Points: <input type="range" id="nPoints" min="10" max="100" value="40">
+    <span id="nPointsVal">40</span>
+  </label>
+  <label>Smooth: <input type="range" id="smoothWindow" min="1" max="20" value="5">
+    <span id="smoothVal">5</span>
+  </label>
+  <button class="danger" id="clearBtn">Clear</button>
+  <button id="undoBtn">Undo</button>
+  <button class="primary" id="copyBtn">Copy JSON</button>
+</div>
+
+<div class="canvas-wrap">
+  <canvas id="canvas" width="700" height="400"></canvas>
+</div>
+
+<div id="status">Load an image or draw directly on the canvas.</div>
+
+<div class="json-output">
+  <textarea id="jsonOut" readonly placeholder="Control points will appear here as [[x,y], ...]"></textarea>
+</div>
+
+<div class="info">
+  Draw a freehand curve on the image. The curve will be smoothed and resampled
+  to evenly-spaced control points. Copy the JSON output to use with
+  <code>Lattice2D.from_curve_points()</code>.
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const fileInput = document.getElementById('fileInput');
+const nPointsSlider = document.getElementById('nPoints');
+const nPointsVal = document.getElementById('nPointsVal');
+const smoothSlider = document.getElementById('smoothWindow');
+const smoothVal = document.getElementById('smoothVal');
+const clearBtn = document.getElementById('clearBtn');
+const undoBtn = document.getElementById('undoBtn');
+const copyBtn = document.getElementById('copyBtn');
+const jsonOut = document.getElementById('jsonOut');
+const status = document.getElementById('status');
+
+let bgImage = null;       // loaded background image
+let rawPoints = [];        // raw mouse points [{x, y}, ...]
+let controlPoints = [];    // resampled control points [[x, y], ...]
+let drawing = false;
+let scaleX = 1, scaleY = 1; // canvas-to-image scale
+
+// --- Image loading ---
+
+fileInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      bgImage = img;
+      // Fit canvas to image, max 900px wide
+      const maxW = 900;
+      const scale = Math.min(1, maxW / img.width);
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      scaleX = img.width / canvas.width;
+      scaleY = img.height / canvas.height;
+      clearAll();
+      status.textContent = `Image loaded: ${img.width}x${img.height} (display: ${canvas.width}x${canvas.height})`;
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+// --- Drawing ---
+
+canvas.addEventListener('mousedown', (e) => {
+  drawing = true;
+  rawPoints = [];
+  const rect = canvas.getBoundingClientRect();
+  addPoint(e.clientX - rect.left, e.clientY - rect.top);
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!drawing) return;
+  const rect = canvas.getBoundingClientRect();
+  addPoint(e.clientX - rect.left, e.clientY - rect.top);
+});
+
+canvas.addEventListener('mouseup', () => {
+  if (!drawing) return;
+  drawing = false;
+  if (rawPoints.length >= 2) {
+    processAndDisplay();
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  if (drawing) {
+    drawing = false;
+    if (rawPoints.length >= 2) processAndDisplay();
+  }
+});
+
+function addPoint(cx, cy) {
+  rawPoints.push({ x: cx, y: cy });
+  // Draw raw stroke
+  if (rawPoints.length > 1) {
+    const prev = rawPoints[rawPoints.length - 2];
+    ctx.beginPath();
+    ctx.moveTo(prev.x, prev.y);
+    ctx.lineTo(cx, cy);
+    ctx.strokeStyle = 'rgba(255, 200, 0, 0.6)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+
+// --- Processing ---
+
+function processAndDisplay() {
+  const smoothW = parseInt(smoothSlider.value);
+  const nPts = parseInt(nPointsSlider.value);
+
+  // Smooth raw points with moving average
+  const smoothed = smoothPoints(rawPoints, smoothW);
+
+  // Arc-length resample
+  controlPoints = arcLengthResample(smoothed, nPts);
+
+  // Convert to image coordinates
+  const imageCoords = controlPoints.map(([x, y]) => [
+    Math.round(x * scaleX * 10) / 10,
+    Math.round(y * scaleY * 10) / 10,
+  ]);
+
+  redraw();
+
+  // Update JSON output
+  const json = JSON.stringify(imageCoords.map(([x, y]) => [x, y]));
+  jsonOut.value = json;
+  status.textContent = `${controlPoints.length} control points generated.`;
+}
+
+function smoothPoints(pts, windowSize) {
+  if (windowSize <= 1 || pts.length < windowSize) return pts.map(p => [p.x, p.y]);
+  const half = Math.floor(windowSize / 2);
+  const result = [];
+  for (let i = 0; i < pts.length; i++) {
+    let sx = 0, sy = 0, count = 0;
+    for (let j = Math.max(0, i - half); j <= Math.min(pts.length - 1, i + half); j++) {
+      sx += pts[j].x;
+      sy += pts[j].y;
+      count++;
+    }
+    result.push([sx / count, sy / count]);
+  }
+  return result;
+}
+
+function arcLengthResample(pts, nPts) {
+  if (pts.length < 2) return pts;
+
+  // Cumulative arc lengths
+  const cumLen = [0];
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i][0] - pts[i-1][0];
+    const dy = pts[i][1] - pts[i-1][1];
+    cumLen.push(cumLen[i-1] + Math.sqrt(dx*dx + dy*dy));
+  }
+  const totalLen = cumLen[cumLen.length - 1];
+  if (totalLen < 1e-6) return [pts[0]];
+
+  const result = [];
+  for (let i = 0; i < nPts; i++) {
+    const target = (i / (nPts - 1)) * totalLen;
+    // Binary search for segment
+    let lo = 0, hi = cumLen.length - 1;
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1;
+      if (cumLen[mid] <= target) lo = mid; else hi = mid;
+    }
+    const segLen = cumLen[hi] - cumLen[lo];
+    const t = segLen > 1e-9 ? (target - cumLen[lo]) / segLen : 0;
+    result.push([
+      pts[lo][0] + t * (pts[hi][0] - pts[lo][0]),
+      pts[lo][1] + t * (pts[hi][1] - pts[lo][1]),
+    ]);
+  }
+  return result;
+}
+
+// --- Rendering ---
+
+function redraw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Background image
+  if (bgImage) {
+    ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
+  } else {
+    ctx.fillStyle = '#222';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  // Smoothed curve
+  if (controlPoints.length >= 2) {
+    ctx.beginPath();
+    ctx.moveTo(controlPoints[0][0], controlPoints[0][1]);
+    for (let i = 1; i < controlPoints.length; i++) {
+      ctx.lineTo(controlPoints[i][0], controlPoints[i][1]);
+    }
+    ctx.strokeStyle = '#00d4ff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Control point dots
+    for (const [x, y] of controlPoints) {
+      ctx.beginPath();
+      ctx.arc(x, y, 3.5, 0, 2 * Math.PI);
+      ctx.fillStyle = '#ff4466';
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+}
+
+// --- Buttons ---
+
+function clearAll() {
+  rawPoints = [];
+  controlPoints = [];
+  jsonOut.value = '';
+  redraw();
+  status.textContent = 'Cleared. Draw a new curve.';
+}
+
+clearBtn.addEventListener('click', clearAll);
+
+undoBtn.addEventListener('click', () => {
+  clearAll();
+});
+
+copyBtn.addEventListener('click', () => {
+  if (!jsonOut.value) {
+    status.textContent = 'Nothing to copy — draw a curve first.';
+    return;
+  }
+  navigator.clipboard.writeText(jsonOut.value).then(() => {
+    status.textContent = 'JSON copied to clipboard!';
+  }).catch(() => {
+    jsonOut.select();
+    document.execCommand('copy');
+    status.textContent = 'JSON copied (fallback).';
+  });
+});
+
+// Slider updates
+nPointsSlider.addEventListener('input', () => {
+  nPointsVal.textContent = nPointsSlider.value;
+  if (rawPoints.length >= 2) processAndDisplay();
+});
+smoothSlider.addEventListener('input', () => {
+  smoothVal.textContent = smoothSlider.value;
+  if (rawPoints.length >= 2) processAndDisplay();
+});
+
+// Initial draw
+redraw();
+</script>
+</body>
+</html>

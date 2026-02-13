@@ -41,3 +41,8 @@ demo_data/
 *.png
 *.jpg
 !bagel.jpg
+!river.jpg
+!arch.jpeg
+
+# SAM model checkpoints
+models/

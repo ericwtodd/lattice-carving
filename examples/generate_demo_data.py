@@ -25,6 +25,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from PIL import Image
 
 from src.lattice import Lattice2D
 from src.carving import (
@@ -533,6 +534,74 @@ def setup_river():
                 n_seams=15, cyclic=False)
 
 
+def _load_river_centerline():
+    """Load river centerline: try cached JSON, then SAM, then hardcoded."""
+    project_root = Path(__file__).parent.parent
+
+    # 1. Cached centerline from SAM demo
+    cached_path = project_root / "output" / "river_centerline.json"
+    if cached_path.exists():
+        with open(cached_path) as f:
+            pts = json.load(f)
+        print("  Centerline: loaded from cached JSON")
+        return torch.tensor(pts, dtype=torch.float32), "cached"
+
+    # 2. Try running SAM
+    try:
+        from src.roi_extraction import segment_river
+        river_path = project_root / "river.jpg"
+        control_pts = segment_river(str(river_path), n_control_points=40)
+        cached_path.parent.mkdir(exist_ok=True)
+        with open(cached_path, "w") as f:
+            json.dump(control_pts.tolist(), f, indent=2)
+        print("  Centerline: extracted via SAM (cached for reuse)")
+        return control_pts, "sam"
+    except Exception as e:
+        print(f"  SAM unavailable ({e}), using hardcoded centerline")
+
+    # 3. Hardcoded manual trace
+    control_pts = torch.tensor([
+        [30, 310], [70, 275], [120, 220], [155, 175], [155, 140],
+        [140, 110], [165, 85], [215, 75], [265, 105], [310, 145],
+        [355, 175], [395, 155], [440, 110], [490, 65], [540, 55],
+        [590, 65], [640, 95], [670, 120],
+    ], dtype=torch.float32)
+    print("  Centerline: using hardcoded manual trace")
+    return control_pts, "hardcoded"
+
+
+def setup_real_river():
+    """Real river image with SAM-derived or manually traced centerline."""
+    river_path = Path(__file__).parent.parent / "river.jpg"
+    if not river_path.exists():
+        print("  river.jpg not found, skipping real river demo")
+        return None
+
+    pil_img = Image.open(river_path).convert('RGB')
+    img_np = np.array(pil_img).astype(np.float32) / 255.0
+    image = torch.from_numpy(img_np).permute(2, 0, 1).contiguous()
+    C, H, W = image.shape
+    print(f"  Real river: {W}x{H}")
+
+    control_pts, source = _load_river_centerline()
+
+    perp = 80
+    lattice = Lattice2D.from_curve_points(
+        control_pts, n_lines=512, perp_extent=perp)
+    lattice.smooth(max_iterations=100)
+
+    lattice_w = int(2 * perp)
+    center_u = int(perp)
+    river_half = 25
+    buf = 5
+    roi_range = (center_u - river_half, center_u + river_half)
+    pair_range = (center_u + river_half + buf, lattice_w)
+
+    return dict(image=image, lattice=lattice, lattice_w=lattice_w,
+                roi_range=roi_range, pair_range=pair_range,
+                n_seams=12, cyclic=False)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -566,8 +635,16 @@ if __name__ == '__main__':
         ('arch_shrink', {**setup_arch(), 'mode': 'shrink', 'title':'Arch -- Shrink'}),
         ('arch_grow', {**setup_arch(), 'mode':'grow', 'title':'Arch -- Grow'}),
         ('river_shrink', {**setup_river(), 'mode': 'shrink', 'title':'River -- Shrink'}),
-        ('river_grow', {**setup_river(), 'mode': 'grow', 'title':'River -- Grow'})
+        ('river_grow', {**setup_river(), 'mode': 'grow', 'title':'River -- Grow'}),
     ]
+
+    # Add real river demos if image is available
+    real_river = setup_real_river()
+    if real_river is not None:
+        all_demos.extend([
+            ('real_river_shrink', {**real_river, 'mode': 'shrink', 'title': 'Real River -- Shrink'}),
+            ('real_river_grow', {**real_river, 'mode': 'grow', 'title': 'Real River -- Grow'}),
+        ])
 
     results = []
     for name, params in all_demos:
