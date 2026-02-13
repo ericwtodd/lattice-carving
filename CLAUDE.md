@@ -37,8 +37,25 @@ based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
 - Resolution sweep (DEVLOG.md) confirms: 600px / 1024 scanlines produces smooth results
 - DP seams are correct and optimal — the artifacts are from lattice discretization, not seam quality
 
+**SAM segmentation + curve tools (added 2026-02-13):**
+- ✅ **SAM-based ROI extraction**: `src/roi_extraction.py`
+  - `segment_with_sam()` — point-prompted or automatic mask generation
+  - `mask_to_centerline()` — skeletonize → graph-based longest path → arc-length resample
+  - `segment_river()` — convenience: SAM + centerline in one call
+  - Requires: `segment-anything`, `scikit-image`, `opencv-python-headless`
+  - SAM checkpoint: `models/sam_vit_b_01ec64.pth` (375MB, gitignored)
+- ✅ **Browser curve drawer**: `web/curve_drawer.html`
+  - Freehand drawing, smoothing, arc-length resampling, JSON export
+  - Pure HTML+JS+Canvas, no dependencies, no server needed
+- ✅ **SAM demo**: `examples/segment_river_demo.py`
+  - 4-panel diagnostic: original, SAM mask, skeleton+centerline, lattice overlay
+  - Saves `output/river_centerline.json` for reuse
+- ✅ **Centerline loading cascade** in pipeline/demo scripts:
+  1. Cached JSON (`output/river_centerline.json`)
+  2. SAM extraction (auto-cached)
+  3. Hardcoded manual trace (fallback)
+
 **What still needs work:**
-- ⚠️ **SAM-based ROI definition** — use SAM2 for precise object boundary extraction
 - ⚠️ **Browser demo** — not started
 
 ## Coding Preferences
@@ -76,10 +93,17 @@ based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
   - All seam functions support `n_candidates` for multi-greedy (Section 4.0.1)
 - `src/carving.py` — High-level carving orchestration
   - `carve_image_traditional()` — standard rectangular seam carving
-  - `carve_image_lattice_guided()` — iterative warping (Section 3.3), with ROI bounds
-  - `carve_seam_pairs()` — local region resizing (Section 3.6), iterative warping
+  - `carve_image_lattice_guided()` — composed coordinate mapping (Section 3.3), with ROI bounds
+  - `carve_seam_pairs()` — local region resizing (Section 3.6), composed coordinate mapping
   - `_carve_image_lattice_naive()` — naive double-interpolation (kept for comparison)
+- `src/roi_extraction.py` — SAM segmentation + mask-to-centerline extraction
+  - `segment_with_sam()` — point-prompted or automatic mask generation
+  - `mask_to_centerline()` — skeletonize → graph-based longest path → resample
+  - `segment_river()` — convenience combining both steps
 - `examples/reproduce_figures.py` — Visual validation: traditional, arch, no-blur, synthetic bagel, real bagel
+- `examples/generate_pipeline_figure.py` — 5-panel pipeline figures (synthetic + real river)
+- `examples/segment_river_demo.py` — SAM segmentation demo + centerline extraction
+- `web/curve_drawer.html` — Browser-based freehand curve drawing + JSON export
 - `pyproject.toml` — package config for `pip install -e .`
 
 ## Key Algorithmic Notes
