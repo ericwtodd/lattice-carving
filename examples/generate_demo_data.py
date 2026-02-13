@@ -241,7 +241,8 @@ def generate_seam_pair_demo(output_dir, image, lattice, lattice_w,
     u_map, n_map = _precompute_forward_mapping(lattice, H, W, image.device)
 
     # Compute valid mask using the shared helper from carving.py
-    valid_mask = _compute_valid_mask(lattice, u_map, n_map, H, W, image.device)
+    valid_mask = _compute_valid_mask(lattice, u_map, n_map, H, W, image.device,
+                                     lattice_width=lattice_w)
     valid_mask_3d = valid_mask.unsqueeze(0).expand(C, -1, -1)
     print(f"    Valid pixels: {valid_mask.sum().item()}/{H*W} "
           f"({100*valid_mask.float().mean():.1f}%)")
@@ -585,15 +586,15 @@ def setup_real_river():
 
     control_pts, source = _load_river_centerline()
 
-    perp = 80
+    perp = 50
     lattice = Lattice2D.from_curve_points(
         control_pts, n_lines=512, perp_extent=perp)
-    lattice.smooth(max_iterations=100)
+    lattice.smooth(max_iterations=500)
 
     lattice_w = int(2 * perp)
     center_u = int(perp)
-    river_half = 25
-    buf = 5
+    river_half = 20
+    buf = 3
     roi_range = (center_u - river_half, center_u + river_half)
     pair_range = (center_u + river_half + buf, lattice_w)
 

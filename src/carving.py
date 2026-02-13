@@ -89,11 +89,17 @@ def _precompute_forward_mapping(lattice: Lattice2D, H: int, W: int,
 def _compute_valid_mask(lattice: Lattice2D, u_map: torch.Tensor,
                         n_map: torch.Tensor, H: int, W: int,
                         device: torch.device,
-                        threshold: float = 3.0) -> torch.Tensor:
+                        threshold: float = 3.0,
+                        lattice_width: Optional[int] = None) -> torch.Tensor:
     """Compute a boolean mask of pixels that lie inside the lattice region.
 
     Uses a roundtrip test: forward -> inverse -> compare with original position.
     Pixels inside the lattice region roundtrip accurately; distant pixels don't.
+
+    Optionally also requires u and n coordinates to be within lattice bounds.
+    This is important for curved lattices where the forward mapping can send
+    distant pixels to far-away u values (e.g. across an S-bend), producing
+    ambiguous mappings that cause slicing/smearing artifacts during carving.
 
     Args:
         lattice: Lattice2D structure
@@ -102,6 +108,8 @@ def _compute_valid_mask(lattice: Lattice2D, u_map: torch.Tensor,
         H, W: image dimensions
         device: torch device
         threshold: max roundtrip error in pixels to be considered valid
+        lattice_width: if given, also require 0 <= u <= lattice_width and
+            0 <= n <= n_lines-1 for a pixel to be valid
 
     Returns:
         valid_mask: (H, W) boolean tensor
@@ -113,7 +121,13 @@ def _compute_valid_mask(lattice: Lattice2D, u_map: torch.Tensor,
     lattice_pts = torch.stack([u_map.reshape(-1), n_map.reshape(-1)], dim=1)
     roundtrip_pts = lattice.inverse_mapping(lattice_pts)
     roundtrip_err = torch.sqrt(((world_pts - roundtrip_pts)**2).sum(dim=1)).reshape(H, W)
-    return roundtrip_err < threshold
+    valid = roundtrip_err < threshold
+
+    if lattice_width is not None:
+        valid = valid & (u_map >= 0) & (u_map <= lattice_width)
+        valid = valid & (n_map >= 0) & (n_map <= lattice.n_lines - 1)
+
+    return valid
 
 
 def _interpolate_seam(seam: torch.Tensor, n_map: torch.Tensor,
@@ -221,18 +235,18 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
         lattice_width = W
 
     u_map, n_map = _precompute_forward_mapping(lattice, H, W, device)
-    valid_mask = _compute_valid_mask(lattice, u_map, n_map, H, W, device)
+    valid_mask = _compute_valid_mask(lattice, u_map, n_map, H, W, device,
+                                     lattice_width=lattice_width)
     valid_mask_3d = valid_mask.unsqueeze(0).expand(C, -1, -1)
 
     is_cyclic = hasattr(lattice, '_cyclic') and lattice._cyclic
     original_image = image.clone()
-    source_u = u_map.clone()  # tracks where each pixel samples from
+    total_shift = torch.zeros_like(u_map)
 
     for i in range(n_seams):
-        # Render from original using current source_u (no accumulated blur)
-        offset = source_u - u_map
+        # Render from original using accumulated shift (single interpolation)
         rendered = _warp_and_resample(original_image, lattice, u_map, n_map,
-                                      offset)
+                                      total_shift)
         rendered = torch.where(valid_mask_3d, rendered, original_image)
 
         energy = gradient_magnitude_energy(rendered)
@@ -253,23 +267,16 @@ def carve_image_lattice_guided(image: torch.Tensor, lattice: Lattice2D,
 
         seam_interp = _interpolate_seam(seam, n_map, cyclic=is_cyclic)
 
-        # Single-step shift
         shift = torch.where(u_map >= seam_interp,
                             torch.ones_like(u_map),
                             torch.zeros_like(u_map))
         shift = torch.where(valid_mask, shift, torch.zeros_like(shift))
 
-        # Compose source_u: resample the map at shifted positions
-        # This correctly handles nested lookup: source_new[p] = source_old[neighbor(p)]
-        source_u_1ch = source_u.unsqueeze(0)
-        shifted_source = _warp_and_resample(source_u_1ch, lattice, u_map,
-                                            n_map, shift)
-        source_u = torch.where(valid_mask, shifted_source.squeeze(0), source_u)
+        total_shift = total_shift + shift
 
     # Final render from original (only 1 interpolation for pixel data)
-    total_offset = source_u - u_map
     current_image = _warp_and_resample(original_image, lattice, u_map, n_map,
-                                        total_offset)
+                                        total_shift)
     current_image = torch.where(valid_mask_3d, current_image, original_image)
 
     if roi_bounds is not None:
@@ -335,18 +342,24 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
         lattice_width = W
 
     u_map, n_map = _precompute_forward_mapping(lattice, H, W, device)
-    valid_mask = _compute_valid_mask(lattice, u_map, n_map, H, W, device)
+    valid_mask = _compute_valid_mask(lattice, u_map, n_map, H, W, device,
+                                     lattice_width=lattice_width)
     valid_mask_3d = valid_mask.unsqueeze(0).expand(C, -1, -1)
 
     is_cyclic = hasattr(lattice, '_cyclic') and lattice._cyclic
     original_image = image.clone()
-    source_u = u_map.clone()
+
+    # Accumulate shifts as exact integers — no interpolation of the shift map.
+    # Each pixel's shift is always 0 or ±1 per iteration, and since the seam
+    # comparison uses u_map (fixed original coords), shifts are purely additive.
+    # This avoids the interpolation artifacts that compound when composing
+    # source_u through _warp_and_resample at each iteration.
+    total_shift = torch.zeros_like(u_map)
 
     for i in range(n_seams):
-        # Render from original using current source_u (no accumulated blur)
-        offset = source_u - u_map
+        # Render from original using accumulated shift (single interpolation)
         rendered = _warp_and_resample(original_image, lattice, u_map, n_map,
-                                      offset)
+                                      total_shift)
         rendered = torch.where(valid_mask_3d, rendered, original_image)
 
         energy = gradient_magnitude_energy(rendered)
@@ -388,16 +401,12 @@ def carve_seam_pairs(image: torch.Tensor, lattice: Lattice2D,
         combined_shift = torch.where(valid_mask, combined_shift,
                                      torch.zeros_like(combined_shift))
 
-        # Compose source_u: resample the map at shifted positions
-        source_u_1ch = source_u.unsqueeze(0)
-        shifted_source = _warp_and_resample(source_u_1ch, lattice, u_map,
-                                            n_map, combined_shift)
-        source_u = torch.where(valid_mask, shifted_source.squeeze(0), source_u)
+        # Accumulate integer shift — no interpolation, no composition error
+        total_shift = total_shift + combined_shift
 
     # Final render from original (only 1 interpolation for pixel data)
-    total_offset = source_u - u_map
     current_image = _warp_and_resample(original_image, lattice, u_map, n_map,
-                                        total_offset)
+                                        total_shift)
     current_image = torch.where(valid_mask_3d, current_image, original_image)
 
     if squeeze_output:

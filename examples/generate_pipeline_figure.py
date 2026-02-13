@@ -148,15 +148,15 @@ def setup_real_river():
 
     control_pts, source = _load_river_centerline()
 
-    perp = 80
+    perp = 50
     lattice = Lattice2D.from_curve_points(
         control_pts, n_lines=512, perp_extent=perp)
-    lattice.smooth(max_iterations=100)
+    lattice.smooth(max_iterations=500)
 
     lattice_w = int(2 * perp)
     center_u = int(perp)
-    river_half = 25  # approximate half-width of river body in lattice u
-    buf = 5
+    river_half = 20  # approximate half-width of river body in lattice u
+    buf = 3
     roi_range = (center_u - river_half, center_u + river_half)
     pair_range = (center_u + river_half + buf, lattice_w)
 
@@ -173,7 +173,8 @@ def setup_real_river():
 def render_roi_highlight(image, lattice, lattice_w, roi_range, H, W):
     """Panel 2: Original image with ROI region highlighted via semi-transparent overlay."""
     u_map, n_map = _precompute_forward_mapping(lattice, H, W, image.device)
-    valid_mask = _compute_valid_mask(lattice, u_map, n_map, H, W, image.device)
+    valid_mask = _compute_valid_mask(lattice, u_map, n_map, H, W, image.device,
+                                     lattice_width=lattice_w)
 
     roi_mask = valid_mask & (u_map >= roi_range[0]) & (u_map <= roi_range[1])
 
