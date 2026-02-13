@@ -39,6 +39,7 @@ def run_demo(
     perp_extent: float = 80,
     n_lines: int = 512,
     point_prompts: np.ndarray = None,
+    point_labels: np.ndarray = None,
 ):
     """Run the full SAM → centerline → lattice pipeline."""
 
@@ -57,7 +58,8 @@ def run_demo(
 
     # --- Step 1: SAM segmentation ---
     print("Running SAM segmentation...")
-    mask = segment_with_sam(str(image_path), point_prompts=point_prompts)
+    mask = segment_with_sam(str(image_path), point_prompts=point_prompts,
+                            point_labels=point_labels)
     print(f"  Mask: {mask.sum()} pixels ({100 * mask.mean():.1f}% of image)")
 
     # --- Step 2: Extract centerline ---
@@ -97,6 +99,9 @@ def run_demo(
     mask_overlay = np.zeros((*mask.shape, 4))
     mask_overlay[mask, :] = [0, 0.8, 0.8, 0.4]  # cyan overlay
     axes[1].imshow(mask_overlay)
+    if point_prompts is not None:
+        axes[1].scatter(point_prompts[:, 0], point_prompts[:, 1],
+                        s=40, c='lime', marker='*', zorder=10, label='Prompts')
     axes[1].set_title("SAM Mask", fontsize=12, fontweight='bold')
     axes[1].axis('off')
 
@@ -141,4 +146,15 @@ def run_demo(
 
 
 if __name__ == "__main__":
-    run_demo()
+    # Point prompts on the river water (foreground clicks)
+    # These are approximate (x, y) positions on the river channel
+    river_points = np.array([
+        [100, 280],   # river at bottom-left
+        [160, 140],   # river at upper-left bend
+        [310, 150],   # river at center
+        [490, 60],    # river at upper-right
+        [640, 100],   # river at right
+    ], dtype=np.float32)
+    river_labels = np.ones(len(river_points), dtype=np.int32)  # all foreground
+
+    run_demo(point_prompts=river_points, point_labels=river_labels)

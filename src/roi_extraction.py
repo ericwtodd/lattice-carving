@@ -29,8 +29,8 @@ def segment_with_sam(
     point_labels: Optional[np.ndarray] = None,
     model_path: Optional[str] = None,
     model_type: str = "vit_b",
-    darkness_threshold: float = 0.45,
-    min_area_fraction: float = 0.02,
+    darkness_threshold: float = 0.55,
+    min_area_fraction: float = 0.01,
 ) -> np.ndarray:
     """Segment an object (e.g. river) from an image using SAM.
 
@@ -175,58 +175,82 @@ def mask_to_centerline(
 
 
 def _order_skeleton_points(points: np.ndarray) -> np.ndarray:
-    """Order skeleton pixel coordinates by walking nearest-neighbor from an endpoint.
+    """Order skeleton pixel coordinates along the main trunk.
 
-    Finds an endpoint (pixel with fewest skeleton neighbors), then greedily
-    walks to the nearest unvisited point.
+    Builds a pixel-adjacency graph from the skeleton, finds the longest
+    path (diameter of the tree), and returns those points in order.
+    This handles branching skeletons correctly by ignoring side branches.
 
     Args:
         points: (N, 2) array of (x, y) skeleton pixel coordinates.
 
     Returns:
-        (N, 2) ordered array.
+        (M, 2) ordered array (M <= N, only main trunk points).
     """
     from scipy.spatial import KDTree
+    from collections import deque
 
     N = len(points)
+    if N <= 2:
+        return points
+
+    # Build adjacency graph: skeleton pixels within sqrt(2)+epsilon are neighbors
     tree = KDTree(points)
+    adjacency = [[] for _ in range(N)]
+    pairs = tree.query_pairs(r=1.5)
+    for i, j in pairs:
+        adjacency[i].append(j)
+        adjacency[j].append(i)
 
-    # Find an endpoint: point with fewest neighbors within sqrt(2)+0.1 distance
-    neighbor_counts = tree.query_ball_point(points, r=1.5, return_length=True)
-    start_idx = int(np.argmin(neighbor_counts))
+    # BFS to find the farthest node from an arbitrary start
+    def bfs_farthest(start):
+        visited = np.full(N, False)
+        dist = np.full(N, -1, dtype=int)
+        visited[start] = True
+        dist[start] = 0
+        queue = deque([start])
+        farthest = start
+        max_dist = 0
+        while queue:
+            node = queue.popleft()
+            for neighbor in adjacency[node]:
+                if not visited[neighbor]:
+                    visited[neighbor] = True
+                    dist[neighbor] = dist[node] + 1
+                    queue.append(neighbor)
+                    if dist[neighbor] > max_dist:
+                        max_dist = dist[neighbor]
+                        farthest = neighbor
+        return farthest, dist
 
-    # Greedy walk
-    visited = np.zeros(N, dtype=bool)
-    order = np.zeros(N, dtype=int)
-    order[0] = start_idx
-    visited[start_idx] = True
+    # Find diameter: BFS from 0 → farthest → BFS again → farthest
+    end_a, _ = bfs_farthest(0)
+    end_b, dist_from_a = bfs_farthest(end_a)
 
-    for i in range(1, N):
-        current = order[i - 1]
-        # Query increasingly large neighborhoods until we find an unvisited point
-        dists, idxs = tree.query(points[current], k=min(20, N))
-        if isinstance(dists, float):
-            dists = np.array([dists])
-            idxs = np.array([idxs])
-        found = False
-        for d, idx in zip(dists, idxs):
-            if not visited[idx]:
-                order[i] = idx
-                visited[idx] = True
-                found = True
-                break
-        if not found:
-            # Find nearest unvisited globally
-            unvisited = np.where(~visited)[0]
-            if len(unvisited) == 0:
-                order = order[:i]
-                break
-            dists_all = np.linalg.norm(points[unvisited] - points[current], axis=1)
-            nearest = unvisited[np.argmin(dists_all)]
-            order[i] = nearest
-            visited[nearest] = True
+    # Reconstruct path from end_a to end_b via BFS parent tracking
+    visited = np.full(N, False)
+    parent = np.full(N, -1, dtype=int)
+    visited[end_a] = True
+    queue = deque([end_a])
+    while queue:
+        node = queue.popleft()
+        if node == end_b:
+            break
+        for neighbor in adjacency[node]:
+            if not visited[neighbor]:
+                visited[neighbor] = True
+                parent[neighbor] = node
+                queue.append(neighbor)
 
-    return points[order]
+    # Walk back from end_b to end_a
+    path = []
+    node = end_b
+    while node != -1:
+        path.append(node)
+        node = parent[node]
+    path.reverse()
+
+    return points[path]
 
 
 def _arc_length_resample(points: np.ndarray, n_points: int) -> np.ndarray:
