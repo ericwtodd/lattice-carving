@@ -38,11 +38,12 @@ wheels/
 output/
 results/
 demo_data/
+fluidcarving/
 *.png
 *.jpg
-!bagel.jpg
-!river.jpg
-!arch.jpeg
+!assets/*.jpg
+!assets/*.jpeg
+examples/test.py
 
 # SAM model checkpoints
 models/

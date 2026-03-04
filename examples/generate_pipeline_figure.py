@@ -26,7 +26,7 @@ from PIL import Image
 
 from src.lattice import Lattice2D
 from src.carving import (
-    _precompute_forward_mapping, _compute_valid_mask, _warp_and_resample,
+    _precompute_forward_mapping, _compute_valid_mask,
     _interpolate_seam, carve_seam_pairs,
 )
 from src.energy import gradient_magnitude_energy, normalize_energy
@@ -111,7 +111,7 @@ def _load_river_centerline():
     # 2. Try running SAM
     try:
         from src.roi_extraction import segment_river
-        river_path = project_root / "river.jpg"
+        river_path = project_root / "assets" / "river.jpg"
         control_pts = segment_river(str(river_path), n_control_points=40)
         # Cache for next time
         cached_path.parent.mkdir(exist_ok=True)
@@ -135,7 +135,7 @@ def _load_river_centerline():
 
 def setup_real_river():
     """Real river image with SAM-derived or manually traced centerline."""
-    river_path = Path(__file__).parent.parent / "river.jpg"
+    river_path = Path(__file__).parent.parent / "assets" / "river.jpg"
     if not river_path.exists():
         print(f"  river.jpg not found, falling back to synthetic")
         return None
@@ -150,7 +150,7 @@ def setup_real_river():
 
     perp = 50
     lattice = Lattice2D.from_curve_points(
-        control_pts, n_lines=512, perp_extent=perp)
+        control_pts, n_lines=2048, perp_extent=perp)
     lattice.smooth(max_iterations=500)
 
     lattice_w = int(2 * perp)
@@ -231,12 +231,8 @@ def render_lattice_overlay(image, lattice, lattice_w, roi_range, pair_range,
     ax.set_ylim(H - 0.5, -0.5)
 
 
-def render_energy_seams(image, lattice, lattice_w, roi_range, pair_range,
-                        cyclic, ax=None):
-    """Panel 4: Lattice-space energy heatmap with one ROI seam and one pair seam."""
-    if ax is None:
-        return
-
+def compute_seams(image, lattice, lattice_w, roi_range, pair_range, cyclic):
+    """Compute one ROI seam and one pair seam. Returns (roi_seam, pair_seam) tensors."""
     energy = gradient_magnitude_energy(image)
     energy_3d = energy.unsqueeze(0) if energy.dim() == 2 else energy
     lattice_energy = lattice.resample_to_lattice_space(energy_3d, lattice_w)
@@ -244,13 +240,6 @@ def render_energy_seams(image, lattice, lattice_w, roi_range, pair_range,
         lattice_energy = lattice_energy.squeeze(0)
     lattice_energy = normalize_energy(lattice_energy)
 
-    n_lines = lattice.n_lines
-    n_idx = np.arange(n_lines)
-
-    ax.imshow(lattice_energy.cpu().numpy(), cmap='hot', aspect='auto',
-              interpolation='bilinear')
-
-    # Find seams
     if cyclic:
         roi_seam = dp_seam_cyclic(lattice_energy, roi_range, direction='vertical')
         pair_seam = dp_seam_cyclic(lattice_energy, pair_range, direction='vertical')
@@ -258,20 +247,70 @@ def render_energy_seams(image, lattice, lattice_w, roi_range, pair_range,
         roi_seam = dp_seam_windowed(lattice_energy, roi_range, direction='vertical')
         pair_seam = dp_seam_windowed(lattice_energy, pair_range, direction='vertical')
 
-    # Draw seams
+    return roi_seam, pair_seam, lattice_energy
+
+
+def render_energy_seams(image, lattice, lattice_w, roi_range, pair_range,
+                        cyclic, ax=None):
+    """Panel 4: Lattice-space energy heatmap with one ROI seam and one pair seam."""
+    if ax is None:
+        return
+
+    roi_seam, pair_seam, lattice_energy = compute_seams(
+        image, lattice, lattice_w, roi_range, pair_range, cyclic)
+
+    n_lines = lattice.n_lines
+    n_idx = np.arange(n_lines)
+
+    ax.imshow(lattice_energy.cpu().numpy(), cmap='hot', aspect='auto',
+              interpolation='bilinear')
     ax.plot(roi_seam.cpu().numpy(), n_idx, color='cyan', linewidth=1.5,
             label='ROI seam')
     ax.plot(pair_seam.cpu().numpy(), n_idx, color='magenta', linewidth=1.5,
             label='Pair seam')
-
-    # Draw window boundaries
     ax.axvline(roi_range[0], color='cyan', linestyle='--', linewidth=1, alpha=0.6)
     ax.axvline(roi_range[1], color='cyan', linestyle='--', linewidth=1, alpha=0.6)
     ax.axvline(pair_range[0], color='magenta', linestyle='--', linewidth=1, alpha=0.6)
     ax.axvline(pair_range[1], color='magenta', linestyle='--', linewidth=1, alpha=0.6)
-
     ax.set_xlim(0, lattice_w)
     ax.set_ylim(n_lines, 0)
+    ax.legend(fontsize=7, loc='upper right')
+
+
+def render_seams_world_space(image, lattice, lattice_w, roi_range, pair_range,
+                             cyclic, H, W, ax=None):
+    """Panel: Image with seam pair paths drawn in world space.
+
+    Maps each scanline's seam u-value back to world coordinates via inverse_mapping,
+    then draws the resulting curves on the image. This shows exactly where each seam
+    cuts through the real image.
+    """
+    if ax is None:
+        return
+
+    roi_seam, pair_seam, _ = compute_seams(
+        image, lattice, lattice_w, roi_range, pair_range, cyclic)
+
+    ax.imshow(tensor_to_numpy(image), interpolation='bilinear')
+
+    n_lines = lattice.n_lines
+    n_vals = torch.arange(n_lines, dtype=torch.float32)
+
+    for seam, color, label in [
+        (roi_seam, 'cyan', 'ROI seam'),
+        (pair_seam, 'magenta', 'Pair seam'),
+    ]:
+        # Each entry seam[n] is the u-value of the seam at scanline n.
+        # Map (seam[n], n) back to world space.
+        pts = torch.stack([seam.float(), n_vals], dim=1)  # (n_lines, 2) as (u, n)
+        world_pts = lattice.inverse_mapping(pts).cpu().numpy()   # (n_lines, 2) as (x, y)
+        ax.plot(world_pts[:, 0], world_pts[:, 1], color=color,
+                linewidth=2, label=label, alpha=0.9)
+
+    ax.set_xlim(-0.5, W - 0.5)
+    ax.set_ylim(H - 0.5, -0.5)
+    ax.legend(fontsize=8, loc='upper right')
+    ax.axis('off')
 
 
 # ---------------------------------------------------------------------------
@@ -315,43 +354,48 @@ def generate_pipeline_figure(setup_fn, output_name):
     result_np = tensor_to_numpy(result)
 
     # --- Assemble figure ---
-    # 5 panels in a single row, 16:9 aspect for slides
-    fig, axes = plt.subplots(1, 5, figsize=(25, 5))
+    # 6 panels: original | ROI | lattice+bounds | seams (lattice space) | seams (world space) | result
+    fig, axes = plt.subplots(1, 6, figsize=(30, 5))
 
     panel_titles = [
-        "Original",
-        "ROI Region",
-        "Lattice + Boundaries",
-        "Energy + Seam Pair",
-        f"Result ({n_seams} seam pairs)",
+        "1. Original",
+        "2. ROI Region",
+        "3. Lattice + Boundaries",
+        "4. Seam Pair\n(lattice space)",
+        "5. Seam Pair\n(world space)",
+        f"6. Result\n({n_seams} seam pairs)",
     ]
 
     # Panel 1: Original
     axes[0].imshow(tensor_to_numpy(image))
     axes[0].axis('off')
-    axes[0].set_title(panel_titles[0], fontsize=11, fontweight='bold')
+    axes[0].set_title(panel_titles[0], fontsize=10, fontweight='bold')
 
     # Panel 2: ROI highlight
     axes[1].imshow(roi_highlight)
     axes[1].axis('off')
-    axes[1].set_title(panel_titles[1], fontsize=11, fontweight='bold')
+    axes[1].set_title(panel_titles[1], fontsize=10, fontweight='bold')
 
     # Panel 3: Lattice overlay
     render_lattice_overlay(image, lattice, lattice_w, roi_range, pair_range,
                            H, W, ax=axes[2])
     axes[2].axis('off')
-    axes[2].set_title(panel_titles[2], fontsize=11, fontweight='bold')
+    axes[2].set_title(panel_titles[2], fontsize=10, fontweight='bold')
 
-    # Panel 4: Energy + seams
+    # Panel 4: Energy + seams (lattice space)
     render_energy_seams(image, lattice, lattice_w, roi_range, pair_range,
                         cyclic, ax=axes[3])
-    axes[3].axis('off')
-    axes[3].set_title(panel_titles[3], fontsize=11, fontweight='bold')
+    axes[3].set_title(panel_titles[3], fontsize=10, fontweight='bold')
 
-    # Panel 5: Result
-    axes[4].imshow(result_np)
-    axes[4].axis('off')
-    axes[4].set_title(panel_titles[4], fontsize=11, fontweight='bold')
+    # Panel 5: Seam pair projected back into world space
+    render_seams_world_space(image, lattice, lattice_w, roi_range, pair_range,
+                             cyclic, H, W, ax=axes[4])
+    axes[4].set_title(panel_titles[4], fontsize=10, fontweight='bold')
+
+    # Panel 6: Result
+    axes[5].imshow(result_np)
+    axes[5].axis('off')
+    axes[5].set_title(panel_titles[5], fontsize=10, fontweight='bold')
 
     fig.suptitle(f"Lattice-Guided Seam Carving Pipeline — {title}",
                  fontsize=14, fontweight='bold', y=1.02)
@@ -363,13 +407,145 @@ def generate_pipeline_figure(setup_fn, output_name):
     print(f"  Saved: {output_path}")
 
 
+def setup_synthetic_bagel():
+    """Synthetic bagel: circular lattice, shrink the ring body.
+
+    Use 600px and 1024 scanlines to avoid sawtooth artifacts from lattice discretization.
+    """
+    torch.manual_seed(42)
+    H, W = 600, 600
+    cx, cy = 300.0, 300.0
+    inner_r, outer_r = 90, 240
+
+    y = torch.arange(H, dtype=torch.float32)
+    x = torch.arange(W, dtype=torch.float32)
+    yy, xx = torch.meshgrid(y, x, indexing='ij')
+    dist = torch.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+
+    image = torch.full((3, H, W), 0.15)
+    ring_mask = (dist >= inner_r) & (dist <= outer_r)
+    image[0][ring_mask] = 0.85
+    image[1][ring_mask] = 0.70
+    image[2][ring_mask] = 0.40
+    image += (torch.rand(3, H, W) - 0.5) * 0.05
+    image = image.clamp(0, 1)
+
+    theta = torch.linspace(0, 2 * np.pi, 200)
+    mid_r = (inner_r + outer_r) / 2
+    curve_pts = torch.stack([
+        cx + mid_r * torch.cos(theta),
+        cy + mid_r * torch.sin(theta),
+    ], dim=1)
+
+    # pair region needs ≥ 2×n_seams width; add extra perp extent for background
+    perp = (outer_r - inner_r) / 2 + 90   # ring_half=75 + 90 background
+    lattice = Lattice2D.from_curve_points(curve_pts, n_lines=1024,
+                                          perp_extent=perp, cyclic=True)
+    lattice_w = int(2 * perp)
+    center_u = int(perp)
+    ring_half = (outer_r - inner_r) / 2   # 75
+    roi_range = (center_u - 15, center_u + 15)
+    pair_range = (int(center_u + ring_half + 5), lattice_w)
+
+    return dict(image=image, lattice=lattice, lattice_w=lattice_w,
+                roi_range=roi_range, pair_range=pair_range,
+                n_seams=40, cyclic=True, curve_pts=curve_pts,
+                title="Synthetic Bagel (shrink ring body)")
+
+
+def setup_synthetic_arch():
+    """Synthetic arch: semicircular lattice, shrink the arch thickness."""
+    torch.manual_seed(42)
+    H, W = 200, 300
+    cy, cx = H - 20, W // 2
+    outer_r, inner_r = 80, 55
+
+    y = torch.arange(H, dtype=torch.float32)
+    x = torch.arange(W, dtype=torch.float32)
+    yy, xx = torch.meshgrid(y, x, indexing='ij')
+    dist = torch.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+
+    image = torch.full((3, H, W), 0.15)
+    arch_mask = (dist >= inner_r) & (dist <= outer_r) & (yy < cy)
+    image[0][arch_mask] = 0.85
+    image[1][arch_mask] = 0.65
+    image[2][arch_mask] = 0.35
+    image += (torch.rand(3, H, W) - 0.5) * 0.05
+    image = image.clamp(0, 1)
+
+    # Arch is the UPPER semicircle (yy < cy), so the centerline uses cy - mid_r*sin.
+    # angles π→0 traces left-base → top → right-base correctly when y = cy - mid_r*sin.
+    angles = torch.linspace(np.pi, 0, 80)
+    mid_r = (inner_r + outer_r) / 2
+    curve_pts = torch.stack([
+        cx + mid_r * torch.cos(angles),
+        cy - mid_r * torch.sin(angles),   # minus: arch goes UP (toward smaller y)
+    ], dim=1)
+
+    perp = (outer_r - inner_r) / 2 + 20
+    lattice = Lattice2D.from_curve_points(curve_pts, n_lines=H, perp_extent=perp)
+    lattice_w = int(2 * perp)
+    center_u = int(perp)
+    # u=0 → inner hollow, u=center_u → arch midline, u=lattice_w → outer background
+    roi_range = (center_u - 8, center_u + 8)   # arch body (±8 around midline)
+    pair_range = (lattice_w - 15, lattice_w)    # outer background
+
+    return dict(image=image, lattice=lattice, lattice_w=lattice_w,
+                roi_range=roi_range, pair_range=pair_range,
+                n_seams=8, cyclic=False, curve_pts=curve_pts,
+                title="Synthetic Arch (shrink arch thickness)")
+
+
+def setup_real_bagel():
+    """Real bagel image (bagel.jpg, 295x246) with circular lattice."""
+    bagel_path = Path(__file__).parent.parent / "assets" / "bagel.jpg"
+    if not bagel_path.exists():
+        print(f"  bagel.jpg not found, skipping")
+        return None
+
+    pil_img = Image.open(bagel_path).convert('RGB')
+    img_np = np.array(pil_img).astype(np.float32) / 255.0
+    image = torch.from_numpy(img_np).permute(2, 0, 1).contiguous()
+    C, H, W = image.shape
+    print(f"  Real bagel: {W}x{H}")
+
+    # Circular lattice centred on the bagel
+    cx, cy = W / 2, H / 2
+    inner_r = 28
+    outer_r = 92
+    mid_r = (inner_r + outer_r) / 2
+
+    theta = torch.linspace(0, 2 * np.pi, 200)
+    curve_pts = torch.stack([
+        cx + mid_r * torch.cos(theta),
+        cy + mid_r * torch.sin(theta),
+    ], dim=1)
+
+    ring_half = (outer_r - inner_r) / 2   # 32 px
+    # pair needs ≥ 2×n_seams=40 units → add 50px background buffer
+    perp = ring_half + 55
+    lattice = Lattice2D.from_curve_points(
+        curve_pts, n_lines=1024, perp_extent=perp, cyclic=True)
+
+    lattice_w = int(2 * perp)
+    center_u = int(perp)
+    # Ring body: [center_u - ring_half, center_u + ring_half]
+    roi_range  = (center_u - 15, center_u + 15)
+    pair_range = (int(center_u + ring_half + 8), lattice_w)   # ≥40 units wide
+
+    return dict(image=image, lattice=lattice, lattice_w=lattice_w,
+                roi_range=roi_range, pair_range=pair_range,
+                n_seams=20, cyclic=True, curve_pts=curve_pts,
+                title="Real Bagel")
+
+
 if __name__ == "__main__":
     OUTPUT_DIR.mkdir(exist_ok=True)
 
-    # Synthetic river first (fast iteration)
     generate_pipeline_figure(setup_synthetic_river, "pipeline_synthetic_river.png")
-
-    # Real river if available
-    generate_pipeline_figure(setup_real_river, "pipeline_real_river.png")
+    generate_pipeline_figure(setup_synthetic_bagel, "pipeline_synthetic_bagel.png")
+    generate_pipeline_figure(setup_synthetic_arch,  "pipeline_synthetic_arch.png")
+    generate_pipeline_figure(setup_real_bagel,      "pipeline_real_bagel.png")
+    generate_pipeline_figure(setup_real_river,      "pipeline_real_river.png")
 
     print("\nDone!")

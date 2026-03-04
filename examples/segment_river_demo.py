@@ -30,7 +30,7 @@ from src.roi_extraction import segment_with_sam, mask_to_centerline
 
 PROJECT_ROOT = Path(__file__).parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
-RIVER_PATH = PROJECT_ROOT / "river.jpg"
+RIVER_PATH = PROJECT_ROOT / "assets" / "river.jpg"
 
 
 def run_demo(
@@ -45,7 +45,7 @@ def run_demo(
 
     if not image_path.exists():
         print(f"Image not found: {image_path}")
-        print("Please place river.jpg in the project root.")
+        print("Please place river.jpg in the assets/ directory.")
         return
 
     OUTPUT_DIR.mkdir(exist_ok=True)

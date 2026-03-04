@@ -550,7 +550,7 @@ def _load_river_centerline():
     # 2. Try running SAM
     try:
         from src.roi_extraction import segment_river
-        river_path = project_root / "river.jpg"
+        river_path = project_root / "assets" / "river.jpg"
         control_pts = segment_river(str(river_path), n_control_points=40)
         cached_path.parent.mkdir(exist_ok=True)
         with open(cached_path, "w") as f:
@@ -573,7 +573,7 @@ def _load_river_centerline():
 
 def setup_real_river():
     """Real river image with SAM-derived or manually traced centerline."""
-    river_path = Path(__file__).parent.parent / "river.jpg"
+    river_path = Path(__file__).parent.parent / "assets" / "river.jpg"
     if not river_path.exists():
         print("  river.jpg not found, skipping real river demo")
         return None

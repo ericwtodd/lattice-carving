@@ -138,7 +138,7 @@ def figure_arch_carving():
     angles = torch.linspace(np.pi, 0, 60)
     mid_r = (inner_r + outer_r) / 2
     arch_x = cx + mid_r * torch.cos(angles)
-    arch_y = cy + mid_r * torch.sin(angles)
+    arch_y = cy - mid_r * torch.sin(angles)   # minus: arch goes UP (yy < cy)
     curve_pts = torch.stack([arch_x, arch_y], dim=1)
 
     lat = Lattice2D.from_curve_points(curve_pts, n_lines=H, perp_extent=H / 2)
@@ -276,7 +276,7 @@ def figure_real_bagel_seam_pairs():
     shrink the left bagel while the right stays fixed."""
     print("\n--- Figure: Real Double Bagel Seam Pairs ---")
 
-    bagel_path = Path(__file__).parent.parent / "bagel_double.jpg"
+    bagel_path = Path(__file__).parent.parent / "assets" / "bagel_double.jpg"
     if not bagel_path.exists():
         print(f"  SKIPPED: {bagel_path} not found")
         return
@@ -412,6 +412,59 @@ def figure_no_blur_comparison():
 
 
 # -----------------------------------------------------------------------
+# New: Lattice overlay on a line segment (simplest lattice demo)
+# -----------------------------------------------------------------------
+
+def figure_lattice_line_segment():
+    """Visualize a lattice built on a straight line segment.
+
+    Shows the simplest case: a rectangular lattice overlaid on a gradient image.
+    Scanlines (perpendicular to the line) are drawn as colored vertical lines.
+    Illustrates what a lattice is before introducing curved variants.
+    """
+    print("\n--- Figure: Lattice Line Segment ---")
+
+    H, W = 120, 200
+    n_lines = 10
+
+    # Gradient image (dark left → bright right)
+    image = torch.linspace(0, 1, W).unsqueeze(0).expand(H, W)
+    image = image.unsqueeze(0).expand(3, H, W).clone()
+
+    lat = Lattice2D.rectangular(H, W)
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4))
+    ax.imshow(tensor_to_numpy(image), aspect='auto')
+
+    # Draw scanlines (rows in rectangular lattice = horizontal bands)
+    # For a rectangular lattice, scanlines are horizontal. Draw a subset.
+    colors = plt.cm.tab10.colors
+    step = max(1, H // n_lines)
+    for i, row in enumerate(range(0, H, step)):
+        if i >= n_lines:
+            break
+        ax.axhline(y=row, color=colors[i % len(colors)], linewidth=1.5,
+                   label=f"Scanline {i}" if i < 4 else None)
+
+    # Draw the centerline (for rectangular lattice, it's the midpoint row)
+    ax.axhline(y=H // 2, color='white', linewidth=2.5, linestyle='--',
+               label='Centerline')
+
+    ax.set_title("Rectangular Lattice: Scanlines on a Gradient Image", fontsize=12)
+    ax.set_xlabel("x (image column / u in lattice space)")
+    ax.set_ylabel("y (image row / scanline index n)")
+    ax.legend(loc='upper left', fontsize=8, ncol=2)
+    ax.set_xlim(0, W - 1)
+    ax.set_ylim(H - 1, 0)
+
+    path = OUTPUT_DIR / "fig_lattice_line_segment.png"
+    plt.tight_layout()
+    plt.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: {path}")
+
+
+# -----------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------
 
@@ -419,6 +472,7 @@ if __name__ == "__main__":
     OUTPUT_DIR.mkdir(exist_ok=True)
     print(f"Output directory: {OUTPUT_DIR}")
 
+    figure_lattice_line_segment()
     figure_traditional_carving()
     figure_arch_carving()
     figure_no_blur_comparison()

@@ -173,13 +173,13 @@ class TestResampleToLatticeSpace:
         assert ring_col.std() < 0.3, f"Ring column std={ring_col.std():.3f}, expected <0.3"
 
     def test_rectangular_roundtrip_preserves_image(self):
-        """Resample to lattice space and back should approximate original."""
+        """Resample to lattice space and back should be near-exact for rectangular lattice."""
         H, W = 16, 24
         image = make_gradient_image(H, W)
         lat = Lattice2D.rectangular(H, W)
         lattice_img = lat.resample_to_lattice_space(image, lattice_width=W)
         recovered = lat.resample_from_lattice_space(lattice_img, H, W)
-        assert torch.allclose(recovered, image, atol=0.05)
+        assert torch.allclose(recovered, image, atol=1e-3)
 
     def test_grayscale_preserves_dims(self):
         image = make_gradient_image(16, 24, channels=0)
@@ -211,3 +211,53 @@ class TestLatticeGuidedSeamEquivalence:
 
         assert torch.equal(seam_lattice, seam_direct), \
             f"Lattice seam {seam_lattice.tolist()} != direct seam {seam_direct.tolist()}"
+
+
+# ---------------------------------------------------------------------------
+# 5. forward_mapping Eq. 3 agreement on known curved points
+# ---------------------------------------------------------------------------
+
+class TestForwardMappingEq3:
+    """Verify forward_mapping uses paper Eq. 3 (a·w_n / b·w_n), not just distance ratio."""
+
+    def test_rectangular_frac_matches_distance_ratio(self):
+        """For rectangular lattice (parallel scanlines), Eq. 3 and simple distance ratio are identical."""
+        lat = Lattice2D.rectangular(10, 10)
+        # Point midway between scanlines 3 and 4 (y=3.5)
+        pts = torch.tensor([[5.0, 3.5]])
+        result = lat.forward_mapping(pts)
+        # n should be 3.5 (frac = 0.5)
+        assert abs(result[0, 1].item() - 3.5) < 0.01, \
+            f"Expected n_frac=3.5, got {result[0, 1].item():.4f}"
+
+    def test_circular_frac_is_in_range(self):
+        """For circular lattice, frac must be in [0, 1] for all interior points."""
+        lat = Lattice2D.circular((50.0, 50.0), 40.0, n_lines=72)
+        # Grid of interior points
+        xs = torch.linspace(20.0, 80.0, 15)
+        ys = torch.linspace(20.0, 80.0, 15)
+        grid_x, grid_y = torch.meshgrid(xs, ys, indexing='ij')
+        pts = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1)], dim=1)
+        result = lat.forward_mapping(pts)
+        n_frac = result[:, 1]
+        frac_part = n_frac - n_frac.floor()
+        assert frac_part.min() >= 0.0, f"frac below 0: {frac_part.min():.4f}"
+        assert frac_part.max() <= 1.0, f"frac above 1: {frac_part.max():.4f}"
+
+    def test_from_curve_frac_is_in_range(self):
+        """For from_curve_points lattice, frac must be in [0, 1]."""
+        import math
+        # Simple S-curve
+        t = torch.linspace(0, math.pi, 20)
+        control_pts = torch.stack([
+            t * 10,
+            5.0 * torch.sin(t) + 15.0,
+        ], dim=1)
+        lat = Lattice2D.from_curve_points(control_pts, n_lines=20, perp_extent=10.0)
+        # Sample near the curve
+        pts = control_pts + torch.randn_like(control_pts) * 2.0
+        result = lat.forward_mapping(pts)
+        n_frac = result[:, 1]
+        frac_part = (n_frac - n_frac.floor()).clamp(0.0, 1.0)
+        assert frac_part.min() >= 0.0
+        assert frac_part.max() <= 1.0

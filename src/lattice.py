@@ -193,6 +193,32 @@ class Lattice2D:
         # Cyclic lattice (Section 3.5): last scanline connects to first
         lattice._cyclic = cyclic
 
+        # Dense curve for accurate per-pixel forward mapping (C++ VDB equivalent).
+        # KDTree over a densely-sampled curve gives O(N log M) nearest-neighbor
+        # lookup, decoupling curve density from n_lines so we get per-pixel
+        # accuracy without an O(N_pixels × n_lines) all-pairs search.
+        M_dense = max(5000, n_lines * 10)
+        t_dense = torch.linspace(0, float(n_lines - 1), M_dense, device=device)
+        j = torch.floor(t_dense).long().clamp(0, n_lines - 2)
+        frac_d = (t_dense - j.float()).clamp(0.0, 1.0)
+        dense_origins = (
+            (1 - frac_d).unsqueeze(1) * curve_points[j]
+            + frac_d.unsqueeze(1) * curve_points[j + 1]
+        )
+        dense_tang = (
+            (1 - frac_d).unsqueeze(1) * scanline_tangents[j]
+            + frac_d.unsqueeze(1) * scanline_tangents[j + 1]
+        )
+        dense_tang = F.normalize(dense_tang, dim=1, eps=1e-8)
+        lattice._dense_origins = dense_origins
+        lattice._dense_scanline_tangents = dense_tang
+        lattice._dense_n_frac = t_dense
+        try:
+            from scipy.spatial import KDTree
+            lattice._dense_kdtree = KDTree(dense_origins.cpu().numpy())
+        except ImportError:
+            pass
+
         return lattice
 
     @classmethod
@@ -298,6 +324,11 @@ class Lattice2D:
         Returns:
             Points in lattice index space (N, 2) with (u, n) coordinates
         """
+        # Fast path: use dense KDTree for from_curve_points lattices.
+        # This gives per-pixel accuracy matching the C++ VDB approach.
+        if hasattr(self, '_dense_kdtree'):
+            return self._forward_mapping_via_kdtree(world_points)
+
         N = world_points.shape[0]
         device = world_points.device
 
@@ -310,23 +341,30 @@ class Lattice2D:
         # normals: (n_lines, 2) -> (1, n_lines, 2)
         normal_dist = torch.abs((diff * self.normals.unsqueeze(0)).sum(dim=2))  # (N, n_lines)
 
-        # Tangent projection (u) for each scanline — used to break ties.
-        # When two scanlines (e.g. a radial line and its opposite) have the
-        # same normal distance, the correct one is the one giving u >= 0.
-        tangent_proj = (diff * self.tangents.unsqueeze(0)).sum(dim=2)  # (N, n_lines)
+        # Tangent projection (u) for each scanline — used to break ties
+        # for circular() lattices where opposing radial lines share the same
+        # normal distance. The correct scanline gives u >= 0.
+        #
+        # This penalty must be DISABLED for:
+        # - Cyclic lattices (from_curve_points with cyclic=True): pixels inside
+        #   the closed curve have negative tangent_proj to all scanlines.
+        # - from_curve_points lattices (have _u_offset): scanlines extend in
+        #   both directions from the curve, so pixels on one side legitimately
+        #   have negative tangent_proj. The penalty would incorrectly assign
+        #   them to distant scanlines from other parts of the curve.
+        needs_tangent_penalty = (
+            not (hasattr(self, '_cyclic') and self._cyclic)
+            and not hasattr(self, '_u_offset')
+        )
 
-        # For cyclic lattices (from_curve_points with cyclic=True), origins are
-        # ON the curve and tangents point outward. Pixels inside the curve
-        # legitimately have negative tangent projection to all scanlines, so
-        # the penalty would break the mapping. Only apply it for non-cyclic
-        # lattices (like circular() where opposing radial lines need disambiguation).
-        if hasattr(self, '_cyclic') and self._cyclic:
-            effective_dist = normal_dist
-        else:
+        if needs_tangent_penalty:
+            tangent_proj = (diff * self.tangents.unsqueeze(0)).sum(dim=2)
             penalty = torch.where(tangent_proj < 0,
                                   torch.tensor(1e10, device=device),
                                   torch.zeros(1, device=device))
             effective_dist = normal_dist + penalty
+        else:
+            effective_dist = normal_dist
 
         # Find closest scanline for each point
         best_n = torch.argmin(effective_dist, dim=1)  # (N,)
@@ -343,22 +381,36 @@ class Lattice2D:
         if hasattr(self, '_u_offset'):
             u = u + self._u_offset
 
-        # Compute fractional scanline position by interpolating with neighbor
-        best_normal_dist = normal_dist[batch_idx, best_n]  # (N,)
-
+        # Compute fractional scanline position using paper Eq. 3:
+        # frac = (a · w_n) / (b · w_n)
+        # where w_n = normalized rig direction (o_{n+1} - o_n),
+        #       a = p_w - o_n,
+        #       p_c = foot of perpendicular from p_w onto scanline n+1,
+        #       b = p_c - o_n.
         is_cyclic = hasattr(self, '_cyclic') and self._cyclic
         if is_cyclic:
             next_n = (best_n + 1) % self.n_lines
         else:
             next_n = torch.clamp(best_n + 1, 0, self.n_lines - 1)
-        next_normal_dist = normal_dist[batch_idx, next_n]  # (N,)
 
-        total_dist = best_normal_dist + next_normal_dist
-        frac = torch.where(
-            total_dist > 1e-6,
-            best_normal_dist / total_dist,
-            torch.zeros_like(total_dist)
-        )
+        o_curr = self.origins[best_n]   # (N, 2)
+        o_next = self.origins[next_n]   # (N, 2)
+        rig_vec = o_next - o_curr       # (N, 2)
+        w_n = F.normalize(rig_vec, dim=1, eps=1e-8)  # (N, 2)
+
+        # Foot of perpendicular from world_points onto scanline n+1
+        t_next = self.tangents[next_n]  # (N, 2)
+        diff_to_next = world_points - o_next  # (N, 2)
+        proj_t = (diff_to_next * t_next).sum(dim=1, keepdim=True)
+        p_c = o_next + proj_t * t_next  # (N, 2)
+
+        a = world_points - o_curr       # (N, 2)  [same as best_diff]
+        b = p_c - o_curr                # (N, 2)
+
+        a_w = (a * w_n).sum(dim=1)      # (N,)
+        b_w = (b * w_n).sum(dim=1)      # (N,)
+        frac = torch.where(b_w.abs() > 1e-6, a_w / b_w, torch.zeros_like(a_w))
+        frac = frac.clamp(0.0, 1.0)
 
         if not is_cyclic:
             # At the last scanline, no fractional part (non-cyclic only)
@@ -366,6 +418,34 @@ class Lattice2D:
             frac = torch.where(at_last, torch.zeros_like(frac), frac)
 
         n_frac = best_n.float() + frac
+
+        return torch.stack([u, n_frac], dim=1)
+
+    def _forward_mapping_via_kdtree(self, world_points: torch.Tensor) -> torch.Tensor:
+        """Fast forward mapping using dense KDTree (from_curve_points lattices only).
+
+        For each world point, finds the nearest point on the densely-sampled
+        curve centerline, then computes (u, n_frac) from that local frame.
+        O(N log M) vs O(N × n_lines) for the all-pairs approach.
+        """
+        device = world_points.device
+        pts_np = world_points.detach().cpu().numpy()
+        _, indices = self._dense_kdtree.query(pts_np)
+        indices = torch.from_numpy(indices).to(device)
+
+        dense_origins = self._dense_origins.to(device)
+        dense_tang = self._dense_scanline_tangents.to(device)
+        dense_n_frac = self._dense_n_frac.to(device)
+
+        nearest_origins = dense_origins[indices]   # (N, 2)
+        nearest_tang = dense_tang[indices]          # (N, 2)
+        n_frac = dense_n_frac[indices]              # (N,)
+
+        diff = world_points - nearest_origins       # (N, 2)
+        u = (diff * nearest_tang).sum(dim=1)        # (N,)
+
+        if hasattr(self, '_u_offset'):
+            u = u + self._u_offset
 
         return torch.stack([u, n_frac], dim=1)
 
