@@ -180,9 +180,32 @@ def figure_synthetic_bagel_seam_pairs():
     image[0][ring_mask] = 0.85
     image[1][ring_mask] = 0.70
     image[2][ring_mask] = 0.40
-    # Texture
+    # Subtle noise texture on the ring
     image += (torch.rand(3, H, W) - 0.5) * 0.05
     image = image.clamp(0, 1)
+
+    # Sesame seeds: small cream-colored ovals scattered on the ring
+    rng = torch.Generator()
+    rng.manual_seed(7)
+    n_seeds = 60
+    seed_color = torch.tensor([0.96, 0.88, 0.68])
+    for _ in range(n_seeds):
+        angle = torch.rand(1, generator=rng).item() * 2 * np.pi
+        r = inner_r + (outer_r - inner_r) * torch.rand(1, generator=rng).item()
+        sx = cx + r * np.cos(angle)
+        sy = cy + r * np.sin(angle)
+        seed_angle = torch.rand(1, generator=rng).item() * np.pi
+        ca, sa = np.cos(seed_angle), np.sin(seed_angle)
+        # Each seed is a 5x2 oval (half-lengths: 2.5 along long axis, 1 across)
+        for di in range(-3, 4):
+            for dj in range(-1, 2):
+                px = int(round(sx + di * ca - dj * sa))
+                py = int(round(sy + di * sa + dj * ca))
+                if 0 <= px < W and 0 <= py < H:
+                    # Only place seed on the ring
+                    rd = np.sqrt((px - cx)**2 + (py - cy)**2)
+                    if inner_r <= rd <= outer_r:
+                        image[:, py, px] = seed_color
 
     # Build circular lattice from curve points
     theta = torch.linspace(0, 2 * np.pi, 80)

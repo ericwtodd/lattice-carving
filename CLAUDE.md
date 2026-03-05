@@ -55,7 +55,23 @@ based on "Generalized Fluid Carving with Fast Lattice-Guided Seam Computation"
   2. SAM extraction (auto-cached)
   3. Hardcoded manual trace (fallback)
 
+**Animation pipeline (added 2026-03-04):**
+- ✅ **`examples/animate_carving.py`** — animated GIF export for all demos
+  - Each animation produced in two variants: clean + seam-overlay (`_overlay.gif`)
+  - Seam overlay draws ROI seam (cyan) and pair seam (magenta) in world space per frame
+  - `_run_seam_pairs_animation()` — reusable inner loop returning `(clean_frames, overlay_frames)`
+  - `_draw_seam_overlay()` — maps lattice seam positions back to world coords via `inverse_mapping`
+  - Synthetics: gradient+edge (traditional), energy map, seeded bagel, sinusoidal river, arch, cookie batch
+  - Real images: bagel.jpg, bagel_double.jpg, river.jpg
+  - **Grow pair positioning**: `grow_pair` must be placed at the **inner edge** of the target region
+    so that `u > pair_seam` covers the full body. Placing it at center only grows the outer half.
+  - **Grow blur is inherent**: seam insertion = bilinear averaging of neighbors. Cannot be
+    eliminated without patch-based synthesis (PatchMatch). Mitigation: fewer grow seams.
+- ✅ **Sesame seeds** on synthetic bagel in `reproduce_figures.py` (`make_seeded_bagel()` helper)
+
 **What still needs work:**
+- ⚠️ **Interactive ROI specification** — planned: SAM point-click, matplotlib ginput, or
+  browser-based center+radius picker feeding into `from_curve_points` / circular lattice
 - ⚠️ **Browser demo** — not started
 
 ## Coding Preferences

@@ -4,6 +4,58 @@ Research and implementation notes for the lattice carving project.
 
 ---
 
+## 2026-03-04: Animation pipeline + grow_pair geometry fix
+
+### Animation pipeline (`examples/animate_carving.py`)
+
+Added full animated GIF export. Each animation produced in two variants:
+- `<name>.gif` — clean result per frame
+- `<name>_overlay.gif` — seam pair paths drawn in world space before each carved step
+
+Key design: `_run_seam_pairs_animation()` runs the seam-pair inner loop and returns
+`(clean_frames, overlay_frames)` separately. The caller assembles GIFs via `_save_pair_animation()`.
+Seam overlay uses `lat.inverse_mapping()` to map lattice `(u, n)` seam positions back to world `(x, y)`.
+
+Animations: synthetic gradient, energy map, seeded bagel, sinusoidal river, arch, cookie batch,
+plus real images bagel.jpg / bagel_double.jpg / river.jpg.
+
+### Bug: grow only editing half the target region
+
+**Symptom**: grow phase visually only affected one half of the bagel/river body.
+
+**Root cause**: The shift formula `shift += where(u > pair_seam, -1, 0)` only applies the
+grow shift to pixels with `u > pair_seam`. If `pair_seam` is positioned at the CENTER of the
+target region, the inner half (u < pair_seam) gets no shift at all.
+
+**Fix**: Position `grow_pair` at the **inner boundary** of the target region, not its center.
+Then `u > inner_boundary` covers the full body:
+
+```python
+# WRONG: seam found at center — only outer half grows
+grow_pair = (center_u - 5, center_u + 5)
+
+# RIGHT: seam forced to inner edge — full body grows
+inner_edge = center_u - ring_half
+grow_pair = (inner_edge - 8, inner_edge + 8)
+```
+
+### Grow blur is inherent to seam insertion
+
+Seam *removal* (shrink) deletes pixels — lossless, no interpolation needed.
+Seam *insertion* (grow) invents pixels — bilinear average of neighbors. After N insertions,
+there are N more output pixels than source pixels. The bilinear lookup must fill in the gaps,
+which is mathematically a low-pass filter (blur). Spreading seams more evenly distributes
+the blur but doesn't eliminate it. The only real fix is patch-based synthesis (PatchMatch/
+content-aware fill), which is out of scope. Practical mitigation: use fewer grow seams.
+
+### Sesame seeds on synthetic bagel
+
+Added `make_seeded_bagel()` helper in both `reproduce_figures.py` and `animate_carving.py`.
+60 cream-colored oval seeds (`[0.96, 0.88, 0.68]`) placed on the ring body with random
+orientation angles, using a fixed RNG seed for reproducibility.
+
+---
+
 ## 2026-02-12: Fix Cumulative Shift Bug — Switch to Iterative Warping
 
 ### Bug discovered: incorrect multi-seam shift composition
